@@ -1,5 +1,10 @@
 # Offline Trip Agent
 
+![status: currently building](https://img.shields.io/badge/status-currently%20building-orange)
+
+> **Status: 🚧 Currently building** — under active development. Setup steps, tool schema, and the SQLite
+> schema may change without notice; not yet tested end-to-end on a real phone.
+
 ## What this actually is
 A local AI agent (Ollama + tool-calling) that runs fully offline on your phone for
 itinerary management, budgeting, contact tracking, and last-minute replanning using
