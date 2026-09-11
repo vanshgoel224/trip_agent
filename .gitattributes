@@ -1,0 +1,5 @@
+# Shell scripts must stay LF — setup_termux.sh runs on Android/Termux
+*.sh text eol=lf
+*.py text
+*.md text
+*.json text

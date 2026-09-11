@@ -1,0 +1,3 @@
+# Only third-party dependency — everything else is stdlib (json, os, time, socket, sqlite3, hashlib, sys).
+# Ollama itself is a separate binary (see setup_termux.sh), not a pip package.
+requests>=2.31,<3

@@ -1,0 +1,44 @@
+{
+  "agent.py": {
+    "mtime": 1789136641.8761797,
+    "seen": 1789137437.2086222,
+    "ast_hash": "de89676505034de9d04536019a5f83a3",
+    "semantic_hash": "de89676505034de9d04536019a5f83a3"
+  },
+  "db.py": {
+    "mtime": 1789136641.9202814,
+    "seen": 1789137437.2086222,
+    "ast_hash": "0ea955d86e34508a03785906fbdc1c69",
+    "semantic_hash": "0ea955d86e34508a03785906fbdc1c69"
+  },
+  "discover.py": {
+    "mtime": 1789136641.8523946,
+    "seen": 1789137437.2086222,
+    "ast_hash": "76e24b829cf6d5c69342e83d80451c68",
+    "semantic_hash": "76e24b829cf6d5c69342e83d80451c68"
+  },
+  "setup_termux.sh": {
+    "mtime": 1789136641.9467676,
+    "seen": 1789137437.2086222,
+    "ast_hash": "27f903ea2fe755498a4a945196035d38",
+    "semantic_hash": "27f903ea2fe755498a4a945196035d38"
+  },
+  "sync_online.py": {
+    "mtime": 1789136641.796281,
+    "seen": 1789137437.2086222,
+    "ast_hash": "35ef60d61b9a4689867dea2de56ae14d",
+    "semantic_hash": "35ef60d61b9a4689867dea2de56ae14d"
+  },
+  "tools.py": {
+    "mtime": 1789136641.9029377,
+    "seen": 1789137437.2086222,
+    "ast_hash": "af080a525fb3062ae4346d71a13cafbc",
+    "semantic_hash": "af080a525fb3062ae4346d71a13cafbc"
+  },
+  "README.md": {
+    "mtime": 1789136641.822314,
+    "seen": 1789137437.2086222,
+    "ast_hash": "4e2f5c862660a68dedff6c322f3df7c1",
+    "semantic_hash": "4e2f5c862660a68dedff6c322f3df7c1"
+  }
+}
