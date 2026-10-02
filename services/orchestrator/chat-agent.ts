@@ -24,6 +24,9 @@ import type { McpConnections } from "../mcp-client";
 import type { Devices } from "../devices";
 import { resolveLanguage } from "../conversation";
 import type { Delhivery } from "../integrations/delhivery";
+import type { PartnerHub } from "../integrations/partners";
+import { currentActor } from "../../packages/shared/context";
+import type { OperatorFeed } from "../feed";
 import type { Feedback } from "../feedback";
 import type { Negotiator } from "../negotiator";
 import { getRuntime } from "./authority";
@@ -34,7 +37,7 @@ const MAX_STEPS = Number(process.env.AGENT_MAX_STEPS ?? 12); // multi-step tasks
 export const READ_ONLY_TOOLS = new Set([
   "get_trip_status", "recall_memory", "get_budget", "list_expenses", "get_balances", "search_alternative_routes",
   "where_am_i", "find_place", "nearby_places", "directions", "discover_places", "calendar_list_events",
-  "delivery_quote", "delivery_track", "delivery_list", "deal_status",
+  "delivery_quote", "delivery_track", "delivery_list", "deal_status", "travel_search", "travel_bookings",
 ]);
 const APPROVAL_WORDS = /\b(yes|yeah|yep|haan|ha|han|ji|approve|approved|go ahead|book it|do it|ok|okay|theek|thik|kar do|karo|confirm|sure)\b/i;
 const NEGATION_WORDS = /\b(not yet|don'?t|do not|dont|wait|hold on|hold off|no|nope|nahi|nahin|mat|abhi nahi|ruko|later|cancel that)\b/i;
@@ -108,6 +111,19 @@ export const CHAT_TOOLS: ToolSpec[] = [
   fn("delivery_cancel", "Cancel a Delhivery booking before pickup.", { id: str("Booking id or AWB") }, ["id"]),
   fn("delivery_list", "List the traveller's Delhivery bookings."),
 
+  // ---- travel booking (TBO / Agoda / EaseMyTrip; simulated until partner keys) ----
+  fn("travel_search", "Search flights, trains, buses or hotels. Returns offers with offerId, price in ₹, times, class, refundability.", {
+    kind: { type: "string", enum: ["flight", "rail", "bus", "hotel"] }, from: str("Origin city (not for hotels)"), to: str("Destination city (not for hotels)"),
+    city: str("Hotel city"), date: str("YYYY-MM-DD (check-in for hotels)"), nights: { type: "number", description: "Hotels only" },
+    passengers: { type: "number", description: "Default 1" }, max_price: { type: "number", description: "Optional ₹ cap" },
+  }, ["kind", "date"]),
+  fn("travel_book", "Book an offer from travel_search. Only after the traveller explicitly says yes to that offer and gives names as on ID.", {
+    offerId: str("From travel_search"), travellers: { type: "array", items: { type: "string" }, description: "Full names as on ID" }, phone: str("Indian mobile, optional"),
+  }, ["offerId", "travellers"]),
+  fn("operator_message", "The traveller pasted or forwarded a message from an operator (IRCTC/airline/bus SMS or email) about a cancellation, delay or schedule change. Passes it to the autopilot, which decides whether to recover.", { text: str("The message, verbatim") }, ["text"]),
+  fn("travel_bookings", "The traveller's flight/train/bus/hotel bookings with live status."),
+  fn("travel_cancel", "Cancel a booking (refund depends on the fare rules). Only after an explicit yes.", { bookingRef: str("Booking ref or PNR") }, ["bookingRef"]),
+
   // ---- negotiator ----
   fn("start_deal", "Start negotiating with a hotel owner, taxi or auto driver on the traveller's behalf. Needs a target and a MAXIMUM price given by the traveller.", {
     kind: { type: "string", enum: ["hotel", "taxi", "auto", "other"] }, counterparty_name: str(""), counterparty_phone: str("Optional, for WhatsApp"),
@@ -134,10 +150,23 @@ export const CHAT_TOOLS: ToolSpec[] = [
 
 type Deps = {
   store: Store; orchestrator: Orchestrator; travel: TravelAgent; booking: BookingAgent; finance: FinanceAgent;
-  expenses: ExpenseAgent; memory: MemoryGraph; voice: VoiceAgent; chats: Chats; mcpClients: McpConnections; devices: Devices; delhivery: Delhivery; feedback: Feedback; negotiator: Negotiator;
+  expenses: ExpenseAgent; memory: MemoryGraph; voice: VoiceAgent; chats: Chats; mcpClients: McpConnections; devices: Devices; delhivery: Delhivery; feedback: Feedback; negotiator: Negotiator; partners: PartnerHub;
+  canCancel?: (tripId: string | undefined, actor: string | undefined) => boolean;
 };
 
+/** Overnight journeys arrive the next day. */
+const arrivalIso = (date: string, dep: string, arr: string) => {
+  const d = new Date(`${date}T00:00:00+05:30`);
+  if (arr < dep) d.setUTCDate(d.getUTCDate() + 1);
+  const ist = new Date(d.getTime() + 5.5 * 3600_000).toISOString().slice(0, 10);
+  return `${ist}T${arr}:00+05:30`;
+};
+
+const ACTION_INTENTS = new Set(["REPORT_DISRUPTION", "UNDO", "APPROVE", "DECLINE", "VERIFIED_WAY_HOME"]);
+
 export class ChatAgent {
+  feed?: OperatorFeed;
+  autopilotTick?: (tripId: string) => Promise<unknown>;
   constructor(private d: Deps) {}
 
   private istNow() {
@@ -176,7 +205,11 @@ How to think (critical thinking — do this silently, show only the conclusion):
   async respond(chat: Chat, text: string, hint?: string, opts: { ephemeral?: boolean } = {}): Promise<{ reply: string; source: string; tools: string[] } | undefined> {
     const tripId = chat.tripId;
     const online = tripId ? getRuntime(this.d.store, tripId).online : true;
-    const chain = await endpointChain(online);
+    let chain = await endpointChain(online);
+    // Tool-less models (Hermes with its tools off) can't act: actions on a trip go to the
+    // deterministic rules instead (returning undefined hands the turn to them).
+    const actionLike = !!tripId && ACTION_INTENTS.has(rulesProposal(text).intent);
+    if (actionLike) chain = chain.filter((e) => e.tools !== false);
     if (!chain.length) return undefined;
     let tier = 0;
     let ep = chain[0];
@@ -184,6 +217,7 @@ How to think (critical thinking — do this silently, show only the conclusion):
     const o = this.d.orchestrator;
     const used: string[] = [];
     const notes: string[] = hint ? [hint] : [];
+    if (ep.tools === false) notes.push("You have no tools in this session. Answer only from the context above; never claim you booked, saved, paid or looked anything up.");
 
     // Deterministic safety pre-check in every chat: escalate before asking any model.
     if (tripId && classifyDisruption(text) === "SAFETY") {
@@ -447,6 +481,39 @@ Return ONLY JSON: {"ok": true|false, "issues": ["..."], "revised": "<corrected f
         const x = expenses.list(group).find((e) => e.expenseId === a.expenseId);
         if (!x) return { error: "No such expense" };
         return { splitwiseExpenseId: await splitwisePush(x, Number(a.groupId)) };
+      }
+      case "travel_search": {
+        const offers = await this.d.partners.search({ kind: a.kind, from: a.from, to: a.to, city: a.city, date: String(a.date), nights: a.nights, passengers: a.passengers, maxPrice: a.max_price });
+        return { offers: offers.slice(0, 6), simulated: offers.some((o) => o.simulated), note: offers.some((o) => o.simulated) ? "Simulated inventory: TBO/Agoda/EaseMyTrip are not connected yet" : undefined };
+      }
+      case "travel_book": {
+        if (!explicitYes(userText)) return { error: "Not booked: the traveller's latest message is not an explicit, unhedged yes. Show the option and ask them to confirm." };
+        const bk = await this.d.partners.book({ offerId: String(a.offerId), travellers: a.travellers, phone: a.phone, tripId: chat.tripId, bookedBy: currentActor()?.userId });
+        const o = bk.offer;
+        if (chat.tripId && o.kind !== "hotel" && o.from && o.to && o.depart) {
+          const mode = ({ flight: "FLIGHT", rail: "TRAIN", bus: "BUS" } as const)[o.kind];
+          this.d.booking.addLeg(chat.tripId, { from: o.from, to: o.to, mode, departure: `${o.date}T${o.depart}:00+05:30`, arrival: o.arrive ? arrivalIso(o.date, o.depart, o.arrive) : undefined, vendor: o.operator, bookingRef: bk.pnr, cost: bk.totalInr });
+        }
+        return { booking: bk, summary: this.d.partners.summary(bk), addedToItinerary: !!chat.tripId && o.kind !== "hotel" };
+      }
+      case "operator_message": {
+        if (!chat.tripId) return { error: "Select a trip first so I know which journey this is about." };
+        if (!this.feed) return { error: "Operator feed not available" };
+        const r = this.feed.ingestMessage(chat.tripId, String(a.text));
+        const decisions = r.recognised && "event" in r ? await this.autopilotTick?.(chat.tripId) : undefined;
+        return { ...r, decisions };
+      }
+      case "travel_bookings": {
+        const list = this.d.partners.list(chat.tripId);
+        const fresh = await Promise.all(list.map((x) => this.d.partners.refresh(x.bookingRef).then((r) => r.booking).catch(() => x)));
+        return { bookings: fresh.map((x) => ({ bookingRef: x.bookingRef, summary: this.d.partners.summary(x) })) };
+      }
+      case "travel_cancel": {
+        if (!explicitYes(userText)) return { error: "Not cancelled: ask the traveller to confirm the cancellation explicitly." };
+        const bk = this.d.partners.get(String(a.bookingRef));
+        if (bk && this.d.canCancel && !this.d.canCancel(bk.tripId, currentActor()?.userId)) return { error: "Only the trip leader can cancel bookings on a shared trip." };
+        const r = await this.d.partners.cancel(String(a.bookingRef));
+        return { cancelled: this.d.partners.summary(r.booking), refundInr: r.refundInr };
       }
       case "delivery_quote":
         return { quote: await this.d.delhivery.quote(String(a.from), String(a.to), Number(a.weight_kg), a.service === "express" ? "express" : "surface"), note: "Tariff is simulated" };

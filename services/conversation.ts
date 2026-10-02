@@ -75,6 +75,7 @@ const TOOL_HOME: Record<string, ChatMode> = {
   calendar_list_events: "calendar", calendar_add_event: "calendar", add_activity: "calendar", update_activity: "calendar", remove_activity: "calendar",
   get_budget: "budget",
   start_deal: "negotiate", deal_reply: "negotiate", deal_cancel: "negotiate",
+  operator_message: "recovery", travel_search: "book", travel_book: "book", travel_cancel: "book",
   delivery_quote: "delivery", delivery_book: "delivery", delivery_track: "delivery", delivery_cancel: "delivery", delivery_list: "delivery",
 };
 const TRANSLATE_RE = /\b(translate|translation|anuvad|in (hindi|tamil|telugu|kannada|malayalam|marathi|gujarati|punjabi|bengali|odia|urdu|assamese|konkani|english))\b|\b(kaise bolte|ko .* mein kya kehte)\b/i;

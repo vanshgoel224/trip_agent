@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Biruni">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="38%" r="75%">
+      <stop offset="0" stop-color="#25306b"/>
+      <stop offset="1" stop-color="#0d1233"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8dc8a"/>
+      <stop offset="0.55" stop-color="#e2b24f"/>
+      <stop offset="1" stop-color="#b9842a"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- star field -->
+  <g fill="#f8dc8a" opacity="0.55">
+    <circle cx="96" cy="104" r="3"/><circle cx="420" cy="90" r="2.5"/><circle cx="436" cy="400" r="2"/><circle cx="82" cy="410" r="2.5"/>
+  </g>
+  <!-- astrolabe: outer ring (mater) with hour ticks -->
+  <circle cx="256" cy="266" r="150" fill="none" stroke="url(#gold)" stroke-width="16"/>
+  <g stroke="url(#gold)" stroke-width="6" stroke-linecap="round">
+    <line x1="256" y1="128" x2="256" y2="148"/><line x1="256" y1="384" x2="256" y2="404"/>
+    <line x1="118" y1="266" x2="138" y2="266"/><line x1="374" y1="266" x2="394" y2="266"/>
+    <line x1="158.4" y1="168.4" x2="172.5" y2="182.5"/><line x1="339.5" y1="349.5" x2="353.6" y2="363.6"/>
+    <line x1="353.6" y1="168.4" x2="339.5" y2="182.5"/><line x1="172.5" y1="349.5" x2="158.4" y2="363.6"/>
+  </g>
+  <!-- throne / suspension ring -->
+  <path d="M232 112 a24 24 0 0 1 48 0" fill="none" stroke="url(#gold)" stroke-width="12" stroke-linecap="round"/>
+  <!-- rete: ecliptic ring -->
+  <circle cx="276" cy="250" r="78" fill="none" stroke="#f8dc8a" stroke-width="7" opacity="0.9"/>
+  <!-- journey arc (the route home) -->
+  <path d="M168 330 C 210 250, 300 230, 344 190" fill="none" stroke="#7fd3ff" stroke-width="10" stroke-linecap="round" stroke-dasharray="2 22"/>
+  <circle cx="168" cy="330" r="13" fill="#7fd3ff"/>
+  <!-- alidade pointer + star pointer (destination) -->
+  <line x1="200" y1="322" x2="312" y2="210" stroke="url(#gold)" stroke-width="12" stroke-linecap="round"/>
+  <path d="M344 162 l9 21 23 3 -17 15 5 22 -20 -11 -20 11 5 -22 -17 -15 23 -3z" fill="url(#gold)"/>
+  <circle cx="256" cy="266" r="12" fill="url(#gold)"/>
+</svg>

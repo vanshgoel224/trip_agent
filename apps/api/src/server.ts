@@ -16,9 +16,10 @@ import { splitwiseConfigured } from "../../../services/agents/expenses";
 import { providerStatus } from "../../../services/integrations";
 import { ZerodhaProvider } from "../../../services/integrations/zerodha";
 import { SetuProvider } from "../../../services/integrations/setu-aa";
-import { endpointChain, onlineEndpoint, offlineEndpoint } from "../../../services/models";
+import { chat as modelChat, GENERIC_SYSTEM, endpointChain, listModels, onlineEndpoint, offlineEndpoint, PRESETS, type ProviderConfig } from "../../../services/models";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Vault, type Cipher } from "../../../packages/db/vault";
+import { authorized, handleRemoteMcp, remoteMcpEnabled } from "../../../services/mcp/remote";
 import type { Biruni } from "../../../services/runtime";
 import { mkdir, writeFile } from "node:fs/promises";
 import { bus, type BiruniEvent } from "../../../packages/events";
@@ -30,7 +31,12 @@ const vault = new Vault(config.dbPath);
 let b: Biruni = undefined as unknown as Biruni;
 let unlocked = false;
 let calendar: GoogleCalendar;
-async function boot(cipher: Cipher) {
+let booting: Promise<void> | undefined;
+function boot(cipher: Cipher) {
+  // Two unlocks at once must not build two runtimes over the same database.
+  return (booting ??= bootOnce(cipher).catch((e) => ((booting = undefined), Promise.reject(e))));
+}
+async function bootOnce(cipher: Cipher) {
   b = createBiruni({ dbPath: config.dbPath, cipher });
   calendar = new GoogleCalendar(b.store);
   unlocked = true;
@@ -169,6 +175,54 @@ route("GET", "/api/device/state", (_r, _b, _p, url) => {
   return { location: b.devices.latest(tripId), route: b.devices.route(tripId), checkin: tripId ? b.devices.checkinActive(tripId) : false };
 });
 
+// ---------- travel booking partners ----------
+route("GET", "/api/travel/partners", () => b.partners.status());
+route("POST", "/api/travel/search", (_r, body) => b.partners.search({ kind: body.kind, from: body.from, to: body.to, city: body.city, date: String(body.date ?? ""), nights: Number(body.nights) || undefined, passengers: Number(body.passengers) || undefined, maxPrice: Number(body.maxPrice) || undefined }));
+route("GET", "/api/travel/bookings", (_r, _b, _p, url) => b.partners.list(url.searchParams.get("tripId") ?? undefined));
+route("POST", "/api/travel/bookings/:ref/refresh", (_r, _b, p) => b.partners.refresh(p.ref));
+
+// ---------- operator status feed ----------
+route("GET", "/api/feed/status", () => b.feed.status());
+route("POST", "/api/feed/message", async (_r, body) => {
+  const r = b.feed.ingestMessage(String(body.tripId ?? ""), String(body.text ?? ""));
+  return { ...r, decisions: r.recognised && "event" in r ? await b.autopilot.tick(String(body.tripId)) : [] };
+});
+
+// ---------- models (bring your own key) ----------
+
+route("GET", "/api/models/presets", () => ({ presets: PRESETS }));
+route("GET", "/api/models/providers", async () => ({ providers: b.modelSettings.view(), active: (await endpointChain(true).catch(() => [])).map((e) => ({ provider: e.provider ?? "env", model: e.model, tier: e.tier, tools: e.tools !== false })) }));
+route("POST", "/api/models/providers", (_req, body) => {
+  b.modelSettings.save(body.providers);
+  return { providers: b.modelSettings.view() };
+});
+// Load a provider's real model list. Uses the typed key, or the saved one for an existing row.
+route("POST", "/api/models/list", async (_req, body) => {
+  const p = { ...body, apiKey: body.apiKey && !String(body.apiKey).startsWith("••••") ? body.apiKey : body.id ? b.modelSettings.keyFor(body.id) : undefined } as ProviderConfig;
+  if (!(p.provider in PRESETS)) throw new BiruniError("INVALID_REQUEST", "unknown provider");
+  try {
+    return { models: await listModels(p) };
+  } catch (e) {
+    throw new BiruniError("EXTERNAL_FAILURE", `Could not list models: ${(e as Error).message}`);
+  }
+});
+// One short round-trip through the current chain, to prove the keys work.
+route("POST", "/api/models/test", async () => {
+  const chain = await endpointChain(true).catch(() => []);
+  if (!chain.length) return { ok: false, message: "No model reachable. Add a provider with a key (or start your local model)." };
+  const results = [];
+  for (const ep of chain) {
+    const t = Date.now();
+    try {
+      const out = await modelChat(ep, "Reply with exactly: OK", 20_000, GENERIC_SYSTEM);
+      results.push({ provider: ep.provider ?? "env", model: ep.model, ok: true, ms: Date.now() - t, reply: out.slice(0, 40) });
+    } catch (e) {
+      results.push({ provider: ep.provider ?? "env", model: ep.model, ok: false, ms: Date.now() - t, error: String((e as Error).message).slice(0, 160) });
+    }
+  }
+  return { ok: results.some((r) => r.ok), results };
+});
+
 // ---------- connections ----------
 
 const oauthStates = new Set<string>();
@@ -177,10 +231,13 @@ route("GET", "/api/connections", () => {
   return {
     models: {
       online: on ? { provider: on.baseUrl.includes("googleapis") ? "Gemini (stand-in)" : "Nemotron", model: on.model } : null,
-      offline: offlineEndpoint() ? { provider: "Qwen (Ollama)", model: offlineEndpoint()!.model } : null,
+      offline: offlineEndpoint() ? { provider: offlineEndpoint()!.provider === "hermes" ? "Hermes Agent (tools off)" : "Ollama", model: offlineEndpoint()!.model } : null,
+      custom: b.modelSettings.view().map((p) => ({ provider: p.provider, model: p.model ?? PRESETS[p.provider].defaultModel, enabled: p.enabled !== false })),
       lastError: b.models.describe().lastError,
     },
     rails: { ...providerStatus(b.providers), delhivery: b.delhivery.status() },
+    travel: b.partners.status(),
+    operatorFeed: b.feed.status(),
     calendar: calendar.status(),
     reddit: { configured: redditConfigured(), note: redditConfigured() ? "OAuth app" : "anonymous (often blocked from cloud IPs)" },
     youtube: { configured: youtubeConfigured() },
@@ -266,9 +323,21 @@ route("POST", "/api/mcp/servers/:id/delete", async (_r, _b, p) => (await b.mcpCl
 
 // ---------- plumbing ----------
 const STATUS: Record<string, number> = { INVALID_REQUEST: 400, AUTH_FAILURE: 401, POLICY_BLOCKED: 403, AUTHORITY_EXCEEDED: 403, OBLIGATION_BLOCKED: 403, USER_REQUIRED: 409, ALREADY_COMPLETED: 409, RATE_LIMIT: 429, TIMEOUT: 504 };
-const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" };
+const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".webmanifest": "application/manifest+json", ".json": "application/json", ".txt": "text/plain; charset=utf-8", ".ico": "image/x-icon" };
+
+/** Upstream trouble → 502/504; our own bugs → 500 (logged); everything else → 4xx. */
+function classifyError(e: unknown): [number, BiruniError] {
+  if (e instanceof BiruniError) return [STATUS[e.code] ?? (e.code === "EXTERNAL_FAILURE" ? 502 : 500), e];
+  const name = (e as Error)?.name ?? "";
+  const msg = e instanceof Error ? e.message : String(e);
+  if (name === "TimeoutError" || name === "AbortError") return [504, new BiruniError("TIMEOUT", "Upstream service timed out")];
+  if (msg === "fetch failed" || /HTTP \d{3}|ECONN|ENOTFOUND|EAI_AGAIN|socket/i.test(msg)) return [502, new BiruniError("EXTERNAL_FAILURE", msg)];
+  if (e instanceof TypeError || e instanceof ReferenceError || e instanceof RangeError || e instanceof SyntaxError) return [500, new BiruniError("EXTERNAL_FAILURE", msg)];
+  return [400, new BiruniError("INVALID_REQUEST", msg)];
+}
 
 function send(res: ServerResponse, code: number, data: unknown) {
+  if (res.headersSent || res.writableEnded) return void (res.writableEnded || res.end());
   res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   res.end(JSON.stringify(data));
 }
@@ -281,11 +350,16 @@ async function readBody(req: IncomingMessage) {
   }
   (req as any).rawBody = raw;
   if (!raw) return {};
+  let j: unknown;
   try {
-    return JSON.parse(raw);
+    j = JSON.parse(raw);
   } catch {
     throw new BiruniError("INVALID_REQUEST", "invalid JSON");
   }
+  // Handlers read fields off an object; anything else (null, arrays, numbers) is rejected here.
+  if (!j || typeof j !== "object" || Array.isArray(j)) throw new BiruniError("INVALID_REQUEST", "body must be a JSON object");
+  delete (j as any).__proto__;
+  return j as Record<string, any>;
 }
 
 function sse(req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -293,10 +367,12 @@ function sse(req: IncomingMessage, res: ServerResponse, url: URL) {
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
   res.write(": connected\n\n");
   const on = (e: BiruniEvent) => {
+    if (res.writableEnded || res.destroyed) return;
     if (!tripId || e.tripId === tripId || e.tripId === "*") res.write(`data: ${JSON.stringify(e)}\n\n`);
   };
   bus.on("event", on);
-  const ping = setInterval(() => res.write(": ping\n\n"), 15000);
+  const ping = setInterval(() => !res.writableEnded && !res.destroyed && res.write(": ping\n\n"), 15000);
+  res.on("error", () => (bus.off("event", on), clearInterval(ping)));
   req.on("close", () => (bus.off("event", on), clearInterval(ping)));
 }
 
@@ -304,6 +380,9 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   try {
     // ---- PIN lock ----
+    // The Android launcher (another origin) checks the server is up; only this boolean
+    // status is readable cross-origin, without cookies.
+    if (url.pathname === "/api/lock/status") res.setHeader("access-control-allow-origin", "*");
     if (url.pathname === "/api/lock/status") return send(res, 200, { configured: vault.configured, unlocked: unlocked && validSession(req), runtimeReady: unlocked });
     if (url.pathname === "/api/lock/setup" && req.method === "POST") {
       const { pin } = await readBody(req);
@@ -328,6 +407,26 @@ const server = createServer(async (req, res) => {
       if (t) sessions.delete(t);
       res.setHeader("set-cookie", "biruni_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
       return send(res, 200, { ok: true });
+    }
+    // ---- SMS/email forwarder apps (no browser session): token in x-biruni-feed-token ----
+    if (url.pathname === "/api/feed/inbound" && req.method === "POST") {
+      const want = process.env.FEED_TOKEN ?? "";
+      const got = String(req.headers["x-biruni-feed-token"] ?? "");
+      if (want.length < 24 || got.length !== want.length || !timingSafeEqual(Buffer.from(got), Buffer.from(want))) return send(res, 401, { error: { code: "AUTH_FAILURE", message: "feed token required (set FEED_TOKEN, 24+ chars)" } });
+      if (!unlocked) return send(res, 503, { error: { code: "LOCKED", message: "Biruni is locked" } });
+      const body = await readBody(req);
+      const active = b.store.list<TripState>("trips").filter((t) => ["BOOKED", "TRAVELLING", "AWAITING_TRAVELLER"].includes(t.status)).at(-1);
+      const tripId = String(body.tripId ?? active?.tripId ?? "");
+      const r = b.feed.ingestMessage(tripId, String(body.text ?? body.message ?? ""));
+      return send(res, 200, { ...r, decisions: r.recognised && "event" in r ? await b.autopilot.tick(tripId) : [] });
+    }
+    // ---- remote MCP (Streamable HTTP) ----
+    if (url.pathname === "/mcp") {
+      if (!remoteMcpEnabled()) return send(res, 404, { error: { code: "INVALID_REQUEST", message: "Remote MCP is off: set BIRUNI_MCP_TOKEN (24+ chars)" } });
+      if (!authorized(req)) return send(res, 401, { error: { code: "AUTH_FAILURE", message: "Bearer token required" } });
+      if (!unlocked) return send(res, 503, { error: { code: "LOCKED", message: "Biruni is locked: open the app and enter the PIN once after the server starts" } });
+      if (req.method !== "POST") return send(res, 405, { error: { code: "INVALID_REQUEST", message: "POST only (stateless Streamable HTTP)" } });
+      return await handleRemoteMcp(b, req, res, await readBody(req));
     }
     if (url.pathname.startsWith("/api/") && url.pathname !== "/api/whatsapp/webhook") {
       if (!unlocked || !validSession(req)) return send(res, 401, { error: { code: "LOCKED", message: vault.configured ? "Locked: enter your PIN" : "Set a PIN first" } });
@@ -357,7 +456,7 @@ const server = createServer(async (req, res) => {
         if (!m) continue;
         const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
         const body = req.method === "POST" ? await readBody(req) : {};
-        const out = (await r.handler(req, body, params, url)) as any;
+        const out = (await b.modelSettings.run(() => r.handler(req, body, params, url))) as any;
         if (req.method === "GET" && out && typeof out === "object" && typeof out.redirect === "string" && (url.pathname.startsWith("/api/calendar/") || url.pathname.startsWith("/api/zerodha/"))) {
           res.writeHead(302, { location: out.redirect });
           return res.end();
@@ -378,8 +477,9 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { "content-type": MIME[extname(rel)] ?? "application/octet-stream" });
     res.end(file);
   } catch (e) {
-    const err = e instanceof BiruniError ? e : new BiruniError("EXTERNAL_FAILURE", e instanceof Error ? e.message : String(e));
-    send(res, STATUS[err.code] ?? 500, { error: { code: err.code, message: err.message } });
+    const [code, err] = classifyError(e);
+    if (code === 500) console.error(`[500] ${req.method} ${url.pathname}:`, e instanceof Error ? e.stack : e);
+    send(res, code, { error: { code: err.code, message: code === 500 ? "Internal error (logged on the server)" : err.message } });
   }
 });
 
@@ -394,6 +494,13 @@ if (!vault.configured && process.env.BIRUNI_INITIAL_PIN) {
 server.listen(config.port, () => {
   console.log(`Biruni on http://localhost:${config.port}  (providers: ${config.providerMode}, db: ${config.dbPath}) — ${vault.configured ? "LOCKED: open the app and enter your PIN" : "first run: open the app to set a PIN"}`);
 });
+
+// Last line of defence: log and keep serving. One bad request or a flaky upstream
+// (model, map, MCP server) must never take the whole app down.
+process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e instanceof Error ? e.stack : e));
+process.on("uncaughtException", (e) => console.error("[uncaughtException]", e.stack ?? e));
+server.on("clientError", (_e, socket) => socket.writable && socket.end("HTTP/1.1 400 Bad Request\r\n\r\n"));
+server.requestTimeout = 120_000;
 
 const shutdown = () => server.close(() => (unlocked && b.shutdown(), vault.close(), process.exit(0)));
 process.on("SIGINT", shutdown);

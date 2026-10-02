@@ -1,0 +1,13 @@
+{
+  "appId": "in.biruni.app",
+  "appName": "Biruni",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true,
+    "allowNavigation": ["*"]
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

@@ -1,0 +1,59 @@
+# Builds a debug APK of the Biruni Android shell. Download it from the run's
+# "Artifacts" section (biruni-debug-apk). Optional repo variable BIRUNI_SERVER_URL
+# pre-fills the server address; users can still change it on first launch.
+name: Android APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Capacitor
+        run: npm install --no-audit --no-fund
+
+      - name: Server URL (optional)
+        if: ${{ vars.BIRUNI_SERVER_URL != '' }}
+        run: echo "window.BIRUNI_SERVER_URL = '${{ vars.BIRUNI_SERVER_URL }}';" > www/config.js
+
+      - name: Create Android project
+        run: npx cap add android
+
+      - name: Icons and permissions
+        run: |
+          RES=android/app/src/main/res
+          rm -rf $RES/mipmap-anydpi-v26
+          cp -r res/* $RES/
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION RECORD_AUDIO MODIFY_AUDIO_SETTINGS; do
+            grep -q "android.permission.$p" $MANIFEST || sed -i "s#</manifest>#    <uses-permission android:name=\"android.permission.$p\" />\n</manifest>#" $MANIFEST
+          done
+          cat $MANIFEST
+
+      - name: Sync and build
+        run: |
+          npx cap sync android
+          cd android && chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: biruni-debug-apk
+          path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

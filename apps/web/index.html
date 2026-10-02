@@ -5,13 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0a0a0a" />
   <title>Biruni</title>
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/favicon-32.png" sizes="32x32" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <link rel="stylesheet" href="vendor/maplibre-gl.css" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div class="lock" id="lockScreen">
     <div class="lock-box">
-      <div class="hero-logo">◐</div>
+      <img class="hero-logo" src="icons/icon-192.png" alt="" width="64" height="64" />
       <h1>Biruni</h1>
       <p class="muted" id="lockMsg">Enter your PIN</p>
       <form id="lockForm" autocomplete="off">
@@ -28,7 +34,7 @@
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="brand">
-        <span class="logo">◐</span><span class="name">Biruni</span>
+        <img class="logo" src="icons/icon-192.png" alt="" width="24" height="24" /><span class="name">Biruni</span>
         <button class="icon-btn only-mobile" id="closeSidebar" aria-label="Close menu">✕</button>
       </div>
       <button class="new-chat" id="newChatBtn">＋ New chat</button>
@@ -78,7 +84,7 @@
 
       <section class="messages" id="messages" aria-live="polite">
         <div class="hero" id="hero">
-          <div class="hero-logo">◐</div>
+          <img class="hero-logo" src="icons/icon-192.png" alt="" width="64" height="64" />
           <h1>Where to?</h1>
           <p class="muted">Plans, disruptions, translation, splitting bills, maps — one place.</p>
           <div class="chips" id="modeChips"></div>
@@ -191,6 +197,16 @@
     <div class="modal wide">
       <div class="row between"><h2>Connections</h2><button class="icon-btn" data-close>✕</button></div>
       <div id="connList" class="conn-list"></div>
+      <h3>Models — bring your own key</h3>
+      <p class="muted small">Pick any LLM (Anthropic, Gemini, NVIDIA, DeepSeek, OpenAI, OpenRouter, Groq, Mistral, Together, Ollama, Hermes, or any OpenAI-compatible URL). Top row is tried first; on error Biruni falls back to the next, then to rules. Keys are encrypted with your PIN and never sent back to this page.</p>
+      <div id="modelRows"></div>
+      <div class="row">
+        <select id="addProvider" aria-label="Add provider"></select>
+        <button class="pill" id="addProviderBtn" type="button">＋ Add</button>
+        <button class="pill accent" id="saveModels" type="button">Save</button>
+        <button class="pill" id="testModels" type="button">Test</button>
+      </div>
+      <p class="muted small" id="modelMsg"></p>
       <h3>External MCP servers</h3>
       <p class="muted small">Add an HTTP MCP server; its tools become available in General chats. Local (stdio) servers can only be configured server-side via <code>BIRUNI_MCP_SERVERS</code>.</p>
       <div id="mcpList"></div>
@@ -240,7 +256,7 @@
     </div>
   </dialog>
 
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="vendor/maplibre-gl.js"></script>
   <script src="app.js" type="module"></script>
 </body>
 </html>

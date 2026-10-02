@@ -44,7 +44,10 @@ export class Orchestrator {
   // ---------- trips ----------
 
   createTrip(input: CreateTripInput): TripState {
+    if (!input?.traveller || typeof input.traveller !== "object") throw new BiruniError("INVALID_REQUEST", "trip needs a traveller");
+    if (typeof input.traveller.age !== "number" || !Number.isFinite(input.traveller.age)) throw new BiruniError("INVALID_REQUEST", "traveller.age must be a number");
     if (input.traveller.age < config.minAge) throw new BiruniError("POLICY_BLOCKED", "Biruni is not available to users under 18");
+    if (!Array.isArray(input.itinerary?.legs) || !input.itinerary.legs.length) throw new BiruniError("INVALID_REQUEST", "trip needs at least one itinerary leg");
     const traveller: Traveller = { ...input.traveller, travellerId: input.traveller.travellerId ?? id("USR") };
     this.store.put("users", traveller.travellerId, traveller);
     if (traveller.aaConsentId) this.store.put("consents", traveller.aaConsentId, { consentId: traveller.aaConsentId, travellerId: traveller.travellerId, scope: ["SETU_AA_DEBITS_6M", "ZERODHA_HOLDINGS_READ"], grantedAt: nowIso() });

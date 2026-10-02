@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { nowIso } from "../shared";
+import { BiruniError, nowIso } from "../shared";
 import type { Cipher } from "./vault";
 
 // Prototype persistence: node:sqlite (experimental in Node 22) with one
@@ -36,9 +36,23 @@ export const TABLES = [
   "feedback",
   "autopilot",
   "deals",
+  "settings",
+  "offers",
+  "partner_bookings",
 ] as const;
 
 export type Table = (typeof TABLES)[number];
+
+/** Ids and index keys must be strings; numbers are converted, anything else is a bad request. */
+function keyOf(v: unknown, optional = false): string | null {
+  if (v === undefined || v === null) {
+    if (optional) return null;
+    throw new BiruniError("INVALID_REQUEST", "missing id");
+  }
+  if (typeof v === "string") return v;
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  throw new BiruniError("INVALID_REQUEST", "ids must be strings");
+}
 
 // Spec §17 critical invariant: only the finance service mutates these.
 const FINANCE_ONLY: Table[] = ["obligations", "authority_ledgers", "transactions"];
@@ -125,6 +139,7 @@ export class Store {
   }
 
   put<T>(table: Table, id: string, doc: T, meta: Meta = {}, cap?: FinanceCapability) {
+    id = keyOf(id)!;
     if (FINANCE_ONLY.includes(table) && (!cap || cap !== this.financeCap)) {
       throw new Error(`write to ${table} rejected: only the finance agent may mutate it`);
     }
@@ -136,21 +151,22 @@ export class Store {
          ON CONFLICT(id) DO UPDATE SET trip_id=excluded.trip_id, incident_id=excluded.incident_id,
            key=excluded.key, data=excluded.data, updated_at=excluded.updated_at`,
       )
-      .run(id, meta.tripId ?? null, meta.incidentId ?? null, meta.key ?? null, this.seal(JSON.stringify(doc)), now, now);
+      .run(id, keyOf(meta.tripId, true), keyOf(meta.incidentId, true), keyOf(meta.key, true), this.seal(JSON.stringify(doc)), now, now);
     return doc;
   }
 
   get<T>(table: Table, id: string): T | undefined {
-    const row = this.stmt(`SELECT data FROM ${table} WHERE id = ?`).get(id) as { data: string } | undefined;
+    if (typeof id !== "string" && typeof id !== "number") return undefined; // ids from request bodies can be anything
+    const row = this.stmt(`SELECT data FROM ${table} WHERE id = ?`).get(String(id)) as { data: string } | undefined;
     return row ? (JSON.parse(this.open(row.data)) as T) : undefined;
   }
 
   list<T>(table: Table, filter: Meta = {}): T[] {
     const where: string[] = [];
     const args: string[] = [];
-    if (filter.tripId) (where.push("trip_id = ?"), args.push(filter.tripId));
-    if (filter.incidentId) (where.push("incident_id = ?"), args.push(filter.incidentId));
-    if (filter.key) (where.push("key = ?"), args.push(filter.key));
+    if (filter.tripId) (where.push("trip_id = ?"), args.push(keyOf(filter.tripId)!));
+    if (filter.incidentId) (where.push("incident_id = ?"), args.push(keyOf(filter.incidentId)!));
+    if (filter.key) (where.push("key = ?"), args.push(keyOf(filter.key)!));
     const sql = `SELECT data FROM ${table}${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at, rowid`;
     return (this.stmt(sql).all(...args) as { data: string }[]).map((r) => JSON.parse(this.open(r.data)) as T);
   }
@@ -161,7 +177,7 @@ export class Store {
 
   delete(table: Table, id: string) {
     if (FINANCE_ONLY.includes(table)) throw new Error(`delete on ${table} not allowed`);
-    this.stmt(`DELETE FROM ${table} WHERE id = ?`).run(id);
+    this.stmt(`DELETE FROM ${table} WHERE id = ?`).run(keyOf(id)!);
   }
 
   /** Synchronous atomic section. */

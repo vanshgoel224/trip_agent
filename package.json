@@ -1,15 +1,16 @@
 {
   "name": "biruni",
   "version": "0.1.0",
-  "description": "Biruni — bounded-autonomy travel recovery agent (KEN Round 3 prototype)",
+  "description": "Biruni \u2014 bounded-autonomy travel recovery agent (KEN Round 3 prototype)",
   "scripts": {
     "dev": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx apps/api/src/server.ts",
     "start": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx apps/api/src/server.ts",
     "mcp:stdio": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx services/mcp/stdio.ts",
     "demo": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx tests/scenarios/run-demo.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --no-warnings=ExperimentalWarning --import tsx --test \"tests/**/*.test.ts\"",
-    "models:check": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx scripts/check-models.ts"
+    "test": "node --no-warnings=ExperimentalWarning --import tsx --test \"tests/{authority,payments,idempotency,recovery,chat,autopilot,negotiator,security,models,booking,telephony,feed,users}/*.test.ts\"",
+    "models:check": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx scripts/check-models.ts",
+    "test:e2e": "node --no-warnings=ExperimentalWarning --import tsx --test \"tests/e2e/*.test.ts\""
   },
   "repository": {
     "type": "git",
@@ -22,6 +23,7 @@
   },
   "homepage": "https://github.com/vanshgoel224/trip_agent#readme",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "zod": "^4.6.5"
   },

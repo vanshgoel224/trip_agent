@@ -160,14 +160,55 @@ The 🤝 chat negotiates and books for you in the other person's language: Tamil
   - **Phone calls and SMS** need a telephony provider (Exotel, Twilio or a Gnani voice bot). They report "not connected" rather than pretending.
 - **Biruni never pays in a negotiation**; you pay the person directly.
 
+## Models: bring your own key
+
+Connections → **Models** lets each user pick their LLMs in the app (PWA or APK): Anthropic (Claude, official SDK), Gemini, NVIDIA Nemotron, DeepSeek, OpenAI, OpenRouter, Groq, Mistral, Together, Ollama, Hermes Agent, or any OpenAI-compatible URL.
+- **Order is priority.** **Load models** asks the provider for its real model list, and **Test** does one round-trip per provider and shows the latency.
+- **Keys are stored encrypted** with your PIN, like all other data. The page only ever gets them back masked (`••••1234`).
+- **With no providers saved**, the server's `.env` defaults apply.
+- **Claude** runs on the Messages API with `effort: medium` and server-side refusal fallback. Thinking blocks are echoed back unchanged.
+- Model names in the presets are suggestions. Use **Load models** to see what your key actually has.
+
 ## Model fallback chain
 
 Each reply tries these in order:
-1. **Online model:** Nemotron, or Gemini as the stand-in.
-2. **Local Qwen** through Ollama, if it answers a 0.8 s health check.
+1. **Your providers**, in your order. With none saved, the online model from `.env` (Nemotron, or the Gemini stand-in).
+2. **Local model**, if it passes a 0.8 s health check. The default is the **Hermes Agent** gateway (`http://127.0.0.1:8642/v1`, bearer `HERMES_API_KEY`); Ollama is available through `OFFLINE_MODEL_CONFIG`.
 3. **Deterministic rules**, which still handle disruptions, undo, approvals and status.
 
-If the online model fails mid-turn (a quota hit, say), local Qwen continues *the same turn*. `MODEL_PRIMARY=local` puts Qwen first. Local Qwen only works when Biruni runs on your own machine with `ollama serve` and `ollama pull qwen3:4b` (check that tag exists in Ollama's library); this cloud container can't reach it.
+If one model fails mid-turn, the next one continues *the same turn*.
+
+**Hermes runs with its tools off.** Its API runs Hermes' own tools server-side and doesn't accept Biruni's tools, so:
+- Biruni sends it no tools and tells it so.
+- Trip actions (cancellation, undo, approve) never go to a tool-less model. They go to the rules.
+- `config/hermes/config.yaml` disables Hermes' toolsets (terminal, files, browser…) and binds it to 127.0.0.1. **Verify the key names against your Hermes version.**
+
+## Remote MCP (use a hosted Biruni from Claude or any MCP client)
+
+Set `BIRUNI_MCP_TOKEN` (24+ random characters). The server then serves **Streamable HTTP MCP at `/mcp`**:
+- **Tools:** `biruni_chat` (the whole agent), `biruni_trips` and `biruni_trip_status`.
+- **Auth:** `Authorization: Bearer <token>`.
+- **Payment rails are not exposed;** money only moves through the orchestrator's ₹2,000 policy.
+- **The server must be unlocked once** with the PIN after each restart, because the data is encrypted.
+
+## Hosting
+
+- **Vercel: not as-is.** Biruni is a long-running Node server with a local SQLite file, in-memory sessions, a 60 s autopilot loop and SSE. Vercel Functions are stateless with an ephemeral filesystem, so data, the unlock key and the autopilot would not survive between requests. Making it work there means moving storage to a hosted DB and the autopilot to cron. That's real work; check Vercel's current limits first.
+- **Works as-is:** any always-on host with a persistent disk, such as Render, Railway or Fly.io with a volume, a small VPS (Indian regions exist on most of them), or your own PC behind a tunnel (Cloudflare Tunnel / ngrok) for HTTPS.
+- **Phone features need HTTPS:** GPS, the mic and installing as an app all require it.
+
+## Phone app
+
+- **PWA:**
+  - On Android, open the HTTPS URL in Chrome → menu → *Install app*.
+  - Works offline for the app shell, and has full voice (Chrome's speech).
+  - No extra installs.
+- **APK:**
+  - Built by GitHub Actions (`.github/workflows/android-apk.yml`) → download from the run's *Artifacts*. It's a debug build.
+  - The first launch asks for your server address (pre-filled from the repo variable `BIRUNI_SERVER_URL`).
+  - Needs *Install unknown apps* allowed for your file manager or browser. Nothing else to install.
+  - Honest limit (verify on your device): Android WebView generally lacks the browser speech APIs that Chrome has, so in the APK, voice input and output need Gnani keys. Use the PWA in Chrome for free device voices.
+- Hermes or Ollama run on a computer, not on the phone.
 
 ## L4 autopilot and critical thinking
 
@@ -302,8 +343,9 @@ These are my calls. Review them before freeze.
 | Phone calls and SMS for the negotiator | needs a telephony provider | Exotel, Twilio, or a Gnani voice-bot account |
 | WhatsApp cold outreach | WhatsApp's 24-hour rule | an approved message template |
 | Operator status feed for the autopilot | simulated | a real operator, IRCTC or bus-aggregator status API |
-| On-phone Qwen 4B | runs through Ollama on a computer, not inside the phone app | a native mobile build (llama.cpp or MLC) |
-| Native phone app | it's a web app; phone sensors need HTTPS | a PWA served over HTTPS, or Capacitor/React Native |
+| On-phone local model | Hermes/Ollama run on a computer, not inside the phone app | a native on-device build (llama.cpp or MLC) |
+| APK voice without Gnani | Android WebView lacks the Web Speech API | Gnani keys, or native speech plugins |
+| Hosting on Vercel | stateless functions, no persistent disk | hosted DB + cron, or use an always-on host |
 | Multi-user, accounts, cloud sync | single user, one SQLite file | auth plus Postgres (the Prisma schema exists) |
 | Translation quality in low-resource languages | depends on the model | a native-speaker review, and a stronger model for those languages |
 | Crash detection | a heuristic | proper validation on real devices |
@@ -312,14 +354,16 @@ These are my calls. Review them before freeze.
 ## Layout
 
 ```
-apps/web               Grok-style chat UI (vanilla JS, Leaflet map, SSE activity, sensors, mic/WAV recorder)
-apps/api               HTTP API, spec §23 endpoints + /api/scenarios, /api/events
+apps/web               Grok-style chat UI + PWA (vanilla JS, MapLibre vendored locally, SSE activity, sensors, mic/WAV recorder)
+apps/api               HTTP API, spec §23 endpoints + /api/scenarios, /api/events, /mcp (remote MCP)
+apps/mobile            Capacitor Android shell (launcher page, icons); APK built in GitHub Actions
+config/hermes          hardened Hermes Agent config (tools off, localhost only)
 apps/phone-offline     previous offline Python agent (see its README)
 services/orchestrator  planner, router (restartable AgentRuns), state-machine, authority (L4)
 services/agents/*      finance, recovery (+ undo), compliance, voice, travel, booking
 services/mcp           server pipeline, tools, middleware, zod schemas, stdio entry
 services/integrations  five rails (mock + live stub), simulator, scenarios
-services/models        model router (online/offline/rules) + tool-calling chat
+services/models        model router, BYOK providers (Anthropic SDK adapter), encrypted settings
 services/conversation.ts  chat entry point + voice translation pipeline
 services/orchestrator/chat-agent.ts, chats.ts   LLM agent and per-function chats
 services/memory        graph memory (graphify format)

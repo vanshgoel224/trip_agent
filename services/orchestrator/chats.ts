@@ -3,15 +3,16 @@
 import type { Store } from "../../packages/db";
 import { id, nowIso } from "../../packages/shared";
 
-export type ChatMode = "general" | "recovery" | "translate" | "splitwise" | "discover" | "maps" | "calendar" | "budget" | "delivery" | "negotiate" | "custom";
+export type ChatMode = "general" | "recovery" | "translate" | "splitwise" | "discover" | "maps" | "calendar" | "budget" | "delivery" | "negotiate" | "book" | "custom";
 
 const CORE = ["get_trip_status", "remember", "recall_memory", "speak", "make_plan", "update_plan", "record_feedback"];
-const RECOVERY = ["report_disruption", "approve_pending", "decline_pending", "undo_last_action", "mark_verified_way_home", "search_alternative_routes"];
+const RECOVERY = ["operator_message", "report_disruption", "approve_pending", "decline_pending", "undo_last_action", "mark_verified_way_home", "search_alternative_routes"];
 const ACTIVITIES = ["add_activity", "update_activity", "remove_activity"];
 const EXPENSES = ["add_expense", "list_expenses", "get_balances", "settle_up", "remove_expense", "splitwise_groups", "splitwise_push"];
 const CAL = ["calendar_list_events", "calendar_add_event"];
 const MAPS = ["where_am_i", "find_place", "nearby_places", "directions"];
 const DEALS = ["start_deal", "deal_reply", "deal_status", "deal_cancel"];
+const BOOK = ["travel_search", "travel_book", "travel_bookings", "travel_cancel"];
 const DELIVERY = ["delivery_quote", "delivery_book", "delivery_track", "delivery_cancel", "delivery_list"];
 
 export const CHAT_MODES: Record<ChatMode, { label: string; icon: string; prompt: string; tools: string[] }> = {
@@ -19,7 +20,7 @@ export const CHAT_MODES: Record<ChatMode, { label: string; icon: string; prompt:
     label: "General assistant",
     icon: "✦",
     prompt: "Handle anything about the trip; use any tool.",
-    tools: [...CORE, ...RECOVERY, ...ACTIVITIES, ...EXPENSES, ...CAL, ...MAPS, ...DELIVERY, ...DEALS, "get_budget", "discover_places"],
+    tools: [...CORE, ...RECOVERY, ...ACTIVITIES, ...EXPENSES, ...CAL, ...MAPS, ...DELIVERY, ...DEALS, ...BOOK, "get_budget", "discover_places"],
   },
   recovery: {
     label: "Disruption recovery",
@@ -64,6 +65,12 @@ export const CHAT_MODES: Record<ChatMode, { label: string; icon: string; prompt:
     prompt: "Talk to hotel owners, taxi and auto drivers on the traveller's behalf in the other person's language, haggle and confirm. Before start_deal you MUST have from the traveller: who (name), what (goal, dates/pickup-drop), the language, a target price and a MAXIMUM price — ask if any is missing; never invent the max. Then relay each line: show the message to say, and when the traveller gives you the other person's reply, call deal_reply. Biruni never pays here; the traveller pays directly.",
     tools: [...DEALS, "where_am_i", "find_place", "remember", "recall_memory", "get_budget"],
   },
+  book: {
+    label: "Book travel",
+    icon: "🎫",
+    prompt: "Find and book flights, trains, buses and hotels. Search first (travel_search) with from/to or city, date (YYYY-MM-DD) and passengers; show the best 3 options with price in ₹, times, class and refundability. Ask for each traveller's name as on their ID. Book ONLY after the traveller explicitly says yes to one option. Say clearly when inventory is simulated. Prefer options that fit the trip budget and protected obligations.",
+    tools: [...BOOK, "get_budget", "where_am_i", "find_place", "add_activity", "remember", "recall_memory", "get_trip_status"],
+  },
   delivery: {
     label: "Send parcel / luggage",
     icon: "📦",
@@ -96,13 +103,14 @@ export const TOOL_GROUPS: Record<string, { label: string; tools: string[] }> = {
   voice: { label: "Speak aloud", tools: ["speak"] },
   delivery: { label: "Delhivery parcels", tools: DELIVERY },
   negotiate: { label: "Negotiate with hotels & drivers", tools: DEALS },
+  book: { label: "Book flights, trains, buses, hotels", tools: BOOK },
 };
 
 export type CustomSpec = { instructions: string; groups: string[] };
 export type Chat = { chatId: string; mode: ChatMode; title: string; emoji: string; tripId?: string; custom?: CustomSpec; createdAt: string; updatedAt: string };
 
 export const DEFAULT_EMOJI: Record<ChatMode, string> = {
-  general: "✨", recovery: "🚨", translate: "🌐", splitwise: "💸", discover: "🧭", maps: "🗺️", calendar: "📅", budget: "💰", delivery: "📦", negotiate: "🤝", custom: "🛠️",
+  general: "✨", recovery: "🚨", translate: "🌐", splitwise: "💸", discover: "🧭", maps: "🗺️", calendar: "📅", budget: "💰", delivery: "📦", negotiate: "🤝", book: "🎫", custom: "🛠️",
 };
 const cleanEmoji = (e: string | undefined, mode: ChatMode) => {
   const t = (e ?? "").trim();

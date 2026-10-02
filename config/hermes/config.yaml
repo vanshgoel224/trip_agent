@@ -1,0 +1,34 @@
+# Hardened Hermes Agent config for use as Biruni's LOCAL model tier (tools off).
+# Copy to ~/.hermes/config.yaml (merge with yours). Biruni talks to Hermes' OpenAI-
+# compatible gateway (default http://127.0.0.1:8642/v1, bearer API_SERVER_KEY) and
+# sends NO tools; Hermes' own toolsets are disabled so a chat message can never make
+# it run shell commands, edit files or browse on your computer.
+#
+# VERIFY against the Hermes docs for your version: the exact key names
+# (disabled_toolsets / toolset names / api_server host) have changed between releases.
+# After starting it, check `hermes tools` (or the gateway logs) shows no toolsets enabled.
+
+api_server:
+  host: 127.0.0.1        # never bind to 0.0.0.0: the gateway would be reachable from your network
+  port: 8642
+
+agent:
+  disabled_toolsets:
+    - terminal
+    - file
+    - code_execution
+    - browser
+    - computer_use
+    - web
+    - delegation
+    - cronjob
+    - skills
+    - memory
+    - connections
+    - homeassistant
+    - kanban
+    - project
+    - discord
+    - spotify
+    - image_gen
+    - tts

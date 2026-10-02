@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#1b1f4a" />
+  <title>Biruni</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0a0a0a; color: #eee; font: 16px/1.5 system-ui, Roboto, "Noto Sans", sans-serif; }
+    .box { width: min(92vw, 380px); text-align: center; }
+    img { width: 88px; height: 88px; border-radius: 22px; }
+    input { width: 100%; box-sizing: border-box; padding: 12px 14px; border-radius: 12px; border: 1px solid #333; background: #151515; color: inherit; font: inherit; margin: 14px 0 10px; }
+    button { width: 100%; padding: 12px; border: 0; border-radius: 12px; background: #e9b949; color: #111; font: inherit; font-weight: 600; }
+    .muted { color: #999; font-size: 13px; }
+    .err { color: #ff7b72; min-height: 1.5em; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <form class="box" id="f">
+    <img src="icon-192.png" alt="" />
+    <h1>Biruni</h1>
+    <p class="muted">Enter the address of your Biruni server (the computer or cloud host running <code>npm start</code>).</p>
+    <input id="url" type="url" inputmode="url" placeholder="https://biruni.example.com" autocomplete="url" required />
+    <button>Connect</button>
+    <p class="err" id="err"></p>
+    <p class="muted">Use https for GPS and the microphone. On the same Wi-Fi you can use http://&lt;computer-ip&gt;:8787.</p>
+  </form>
+  <script src="config.js"></script>
+  <script>
+    // Launcher: remembers the server, checks it answers, then opens it full-screen.
+    const KEY = "biruni.server";
+    const get = () => { try { return localStorage.getItem(KEY); } catch { return null; } };
+    const set = (v) => { try { localStorage.setItem(KEY, v); } catch {} };
+    const field = document.getElementById("url");
+    field.value = get() || (window.BIRUNI_SERVER_URL || "");
+    async function go(url) {
+      url = url.trim().replace(/\/+$/, "");
+      if (!/^https?:\/\//.test(url)) url = "https://" + url;
+      document.getElementById("err").textContent = "Checking…";
+      try {
+        const r = await fetch(url + "/api/lock/status", { signal: AbortSignal.timeout(8000) });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        set(url);
+        location.href = url + "/";
+      } catch (e) {
+        document.getElementById("err").textContent = "Can't reach " + url + " (" + e.message + "). Is the server running and reachable from this phone?";
+      }
+    }
+    document.getElementById("f").onsubmit = (e) => (e.preventDefault(), go(field.value));
+    if (get() && !location.hash.includes("change")) go(get());
+  </script>
+</body>
+</html>

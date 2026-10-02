@@ -56,9 +56,6 @@ export class Vault {
     const r = this.db.prepare("SELECT data FROM vault WHERE id = 1").get() as { data: string } | undefined;
     return r ? JSON.parse(r.data) : undefined;
   }
-  private write(v: VaultRow) {
-    this.db.prepare("INSERT INTO vault (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data").run(JSON.stringify(v));
-  }
 
   get configured() {
     return !!this.row();
@@ -75,7 +72,13 @@ export class Vault {
     const salt = randomBytes(16);
     const key = await scrypt(pin, salt, { ...KDF, maxmem: 256 * 1024 * 1024 });
     const cipher = makeCipher(key);
-    this.write({ salt: salt.toString("base64"), ...KDF, verifier: cipher.encrypt(VERIFIER), createdAt: new Date().toISOString() });
+    // Plain INSERT (no upsert): if two setups race, the second fails instead of
+    // replacing the salt that the first one's data is already encrypted under.
+    try {
+      this.db.prepare("INSERT INTO vault (id, data) VALUES (1, ?)").run(JSON.stringify({ salt: salt.toString("base64"), ...KDF, verifier: cipher.encrypt(VERIFIER), createdAt: new Date().toISOString() }));
+    } catch {
+      throw new Error("A PIN is already set");
+    }
     return cipher;
   }
 

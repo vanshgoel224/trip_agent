@@ -677,12 +677,91 @@ async function openConnections() {
     row("Maps", true, esc(c.maps.provider) + " · no key needed"),
   ].join("");
   renderMcp(c.mcpServers);
+  loadModels().catch((e) => ($("modelMsg").textContent = `Models: ${e.message}`));
   const fb = await api("GET", "/api/feedback").catch(() => null);
   if (fb) $("feedbackSummary").innerHTML = `${fb.summary.total} entries · 👍 ${fb.summary.messages.up} / 👎 ${fb.summary.messages.down} · vendors ${fb.summary.avgVendor ?? "—"}★ · trips ${fb.summary.avgTrip ?? "—"}★${fb.summary.recentComments.length ? "<br>" + fb.summary.recentComments.slice(0, 3).map((c) => `“${esc(c.comment)}”`).join("<br>") : ""}`;
   const sc = await api("GET", "/api/scenarios");
   $("scenarioList").innerHTML = sc.map((s) => `<button class="chip" data-scenario="${s.name}" title="${esc(s.trigger)}">${s.name}: ${esc(s.title)}</button>`).join("");
   $("connDialog").showModal();
 }
+// ---------------- models (BYOK) ----------------
+const M = { presets: null, rows: [] };
+async function loadModels() {
+  M.presets ??= (await api("GET", "/api/models/presets")).presets;
+  const r = await api("GET", "/api/models/providers");
+  M.rows = r.providers;
+  $("addProvider").innerHTML = Object.entries(M.presets).map(([id, p]) => `<option value="${id}">${esc(p.label)}</option>`).join("");
+  renderModels();
+  $("modelMsg").textContent = r.active.length ? `Active order: ${r.active.map((a) => `${a.provider}/${a.model}${a.tools ? "" : " (no tools)"}`).join(" → ")} → rules` : "No model reachable yet: add one above (server defaults from .env apply when this list is empty).";
+}
+function renderModels() {
+  $("modelRows").innerHTML = M.rows.length ? M.rows.map((p, i) => {
+    const pre = M.presets[p.provider] ?? {};
+    const opts = [...new Set([p.model, pre.defaultModel, ...(p._models ?? pre.models ?? [])].filter(Boolean))];
+    return `<div class="model-row" data-i="${i}">
+      <div class="row between"><b>${i + 1}. ${esc(pre.label ?? p.provider)}</b><span class="row">
+        <label class="small"><input type="checkbox" data-f="enabled" ${p.enabled !== false ? "checked" : ""}/> on</label>
+        <button class="icon-btn" type="button" data-mv="-1" title="Higher priority">↑</button><button class="icon-btn" type="button" data-mv="1" title="Lower priority">↓</button><button class="icon-btn" type="button" data-del title="Remove">✕</button></span></div>
+      <div class="model-grid">
+        ${pre.local && !["hermes"].includes(p.provider) ? "" : `<input data-f="apiKey" type="password" autocomplete="off" placeholder="${esc(pre.keyHint ?? "API key")}" value="${esc(p.apiKey ?? "")}" />`}
+        <input data-f="model" list="ml${i}" placeholder="model (Load models lists real ones)" value="${esc(p.model ?? "")}" /><datalist id="ml${i}">${opts.map((m) => `<option value="${esc(m)}">`).join("")}</datalist>
+        <input data-f="baseUrl" placeholder="${esc(pre.baseUrl || "https://your-server/v1")}" value="${esc(p.baseUrl ?? "")}" />
+        <button class="pill" type="button" data-load>Load models</button>
+      </div></div>`;
+  }).join("") : `<p class="muted small">No providers yet.</p>`;
+}
+$("modelRows").addEventListener("input", (e) => {
+  const i = e.target.closest("[data-i]")?.dataset.i, f = e.target.dataset.f;
+  if (i == null || !f) return;
+  M.rows[i][f] = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+});
+$("modelRows").addEventListener("click", async (e) => {
+  const i = Number(e.target.closest("[data-i]")?.dataset.i);
+  if (Number.isNaN(i)) return;
+  if (e.target.dataset.mv) {
+    const j = i + Number(e.target.dataset.mv);
+    if (j < 0 || j >= M.rows.length) return;
+    [M.rows[i], M.rows[j]] = [M.rows[j], M.rows[i]];
+    renderModels();
+  } else if ("del" in e.target.dataset) {
+    M.rows.splice(i, 1);
+    renderModels();
+  } else if ("load" in e.target.dataset) {
+    const p = M.rows[i];
+    e.target.textContent = "Loading…";
+    try {
+      p._models = (await api("POST", "/api/models/list", { id: p.id, provider: p.provider, apiKey: p.apiKey, baseUrl: p.baseUrl })).models;
+      $("modelMsg").textContent = `${p._models.length} models found for ${p.provider}.`;
+      if (!p.model && p._models[0]) p.model = p._models[0];
+    } catch (err) {
+      $("modelMsg").textContent = err.message;
+    }
+    renderModels();
+  }
+});
+$("addProviderBtn").onclick = () => {
+  M.rows.push({ provider: $("addProvider").value, enabled: true });
+  renderModels();
+};
+$("saveModels").onclick = async () => {
+  try {
+    await api("POST", "/api/models/providers", { providers: M.rows.map(({ _models, hasKey, ...p }) => p) });
+    await loadModels();
+    $("modelMsg").textContent = "Saved. " + $("modelMsg").textContent;
+  } catch (err) {
+    $("modelMsg").textContent = `Not saved: ${err.message}`;
+  }
+};
+$("testModels").onclick = async () => {
+  $("modelMsg").textContent = "Testing…";
+  try {
+    const r = await api("POST", "/api/models/test");
+    $("modelMsg").textContent = r.results ? r.results.map((x) => `${x.provider}/${x.model}: ${x.ok ? `OK ${x.ms} ms` : `failed — ${x.error}`}`).join(" · ") : r.message;
+  } catch (err) {
+    $("modelMsg").textContent = err.message;
+  }
+};
+
 function renderMcp(list) {
   $("mcpList").innerHTML = list.length ? list.map((s) => `<div class="mcp-row"><span><b>${esc(s.name)}</b> <span class="muted small">${esc(s.url ?? s.command ?? "")} · ${s.transport}${s.source === "env" ? " · env" : ""}</span><br><span class="small ${s.connected ? "" : "muted"}">${s.connected ? `${s.tools.length} tools: ${esc(s.tools.slice(0, 8).join(", "))}` : esc(s.error ?? "not connected")}</span></span><span class="row"><button class="pill" data-mcp-re="${s.serverId}">Reconnect</button>${s.source === "ui" ? `<button class="pill" data-mcp-del="${s.serverId}">Remove</button>` : ""}</span></div>`).join("") : `<p class="muted small">None yet.</p>`;
 }
@@ -958,3 +1037,6 @@ async function startApp() {
     await startApp();
   } else showLock(st.configured ? "unlock" : "setup");
 })();
+
+// PWA: offline shell + installable. Failure here is harmless (e.g. plain http on a LAN IP).
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

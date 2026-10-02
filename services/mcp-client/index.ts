@@ -6,6 +6,7 @@
 //    command) can only come from the server-side env BIRUNI_MCP_SERVERS.
 //  - External tools never get money, booking, or approval powers; they are just
 //    extra tools the model may call, and their output is treated as untrusted data.
+import { BiruniError } from "../../packages/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -63,8 +64,14 @@ export class McpConnections {
   }
 
   async add(input: { name: string; url: string; transport?: "http" | "sse"; headers?: Record<string, string> }) {
-    const u = new URL(input.url);
-    if (!/^https?:$/.test(u.protocol)) throw new Error("Only http(s) MCP servers can be added from the UI");
+    let u: URL;
+    try {
+      u = new URL(String(input?.url ?? ""));
+    } catch {
+      throw new BiruniError("INVALID_REQUEST", "MCP server URL is not a valid URL");
+    }
+    if (!/^https?:$/.test(u.protocol)) throw new BiruniError("INVALID_REQUEST", "Only http(s) MCP servers can be added from the UI");
+    if (input.headers !== undefined && (typeof input.headers !== "object" || Object.values(input.headers).some((v) => typeof v !== "string"))) throw new BiruniError("INVALID_REQUEST", "headers must be strings");
     const cfg: McpServerConfig = { serverId: id("MCPS"), name: safe(input.name || u.hostname), transport: input.transport ?? "http", url: u.toString(), headers: input.headers, source: "ui", createdAt: nowIso() };
     this.store.put("mcp_servers", cfg.serverId, cfg);
     await this.connect(cfg.serverId);

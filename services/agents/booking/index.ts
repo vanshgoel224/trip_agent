@@ -1,6 +1,6 @@
 // Booking / execution specialist — recovery booking, cancellation, verification,
 // itinerary versioning (spec §4.7).
-import type { Activity, BookingRecord, Itinerary, Route, TripState } from "../../../packages/domain";
+import type { Activity, BookingRecord, Itinerary, ItineraryLeg, Route, TripState } from "../../../packages/domain";
 import type { Store } from "../../../packages/db";
 import { id, nowIso } from "../../../packages/shared";
 import { bus } from "../../../packages/events";
@@ -33,6 +33,20 @@ export class BookingAgent {
     this.store.put("trips", tripId, { ...trip, itinerary, currentRoute: route, updatedAt: nowIso() }, { tripId });
     this.store.put("itineraries", `${tripId}-v${itinerary.version}`, itinerary, { tripId });
     bus.emitEvent({ tripId, incidentId: booking.incidentId, agent: "booking", type: "ITINERARY", detail: `Itinerary v${itinerary.version}: ${route.mode} ${route.from} → ${route.to} ${route.departure.slice(11, 16)}, PNR ${booking.pnr}`, data: itinerary });
+    return itinerary;
+  }
+
+  /** A transport booking the traveller made (travel_book) becomes an itinerary leg the autopilot watches. */
+  addLeg(tripId: string, leg: Omit<ItineraryLeg, "legId" | "status">) {
+    const trip = this.store.get<TripState>("trips", tripId);
+    if (!trip) return undefined;
+    const newLeg: ItineraryLeg = { ...leg, legId: `LEG-${leg.bookingRef ?? Date.now()}`, status: "CONFIRMED" };
+    if (trip.itinerary.legs.some((l) => l.legId === newLeg.legId)) return trip.itinerary;
+    const legs = [...trip.itinerary.legs, newLeg].sort((a, b) => a.departure.localeCompare(b.departure));
+    const itinerary: Itinerary = { ...trip.itinerary, version: trip.itinerary.version + 1, legs };
+    this.store.put("trips", tripId, { ...trip, itinerary, updatedAt: nowIso() }, { tripId });
+    this.store.put("itineraries", `${tripId}-v${itinerary.version}`, itinerary, { tripId });
+    bus.emitEvent({ tripId, agent: "booking", type: "ITINERARY", detail: `Added ${leg.mode} ${leg.from} → ${leg.to} ${leg.departure.slice(0, 16)}, PNR ${leg.bookingRef}`, data: itinerary });
     return itinerary;
   }
 

@@ -23,7 +23,10 @@ import { Devices } from "./devices";
 import { McpConnections } from "./mcp-client";
 import { Conversation } from "./conversation";
 import { Delhivery } from "./integrations/delhivery";
+import { PartnerHub } from "./integrations/partners";
+import { OperatorFeed } from "./feed";
 import { Autopilot } from "./autopilot";
+import { ModelSettings } from "./models/settings";
 import { Feedback } from "./feedback";
 import { Negotiator } from "./negotiator";
 import { GoogleCalendar } from "./integrations/google-calendar";
@@ -67,9 +70,10 @@ export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; pro
   });
   const mcpClients = new McpConnections(store);
   const delhivery = new Delhivery(store);
+  const partners = new PartnerHub(store);
   const feedback = new Feedback(store);
   const negotiator = new Negotiator(store);
-  const chatAgent = new ChatAgent({ store, orchestrator, travel, booking, finance, expenses, memory, voice, chats, mcpClients, devices, delhivery, feedback, negotiator });
+  const chatAgent = new ChatAgent({ store, orchestrator, travel, booking, finance, expenses, memory, voice, chats, mcpClients, devices, delhivery, feedback, negotiator, partners });
   // A confirmed deal is recorded where the traveller will look for it.
   negotiator.onConfirmed(async (d) => {
     const done: string[] = [];
@@ -95,12 +99,17 @@ export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; pro
     }
     return done;
   });
-  const autopilot = new Autopilot({ store, orchestrator, voice, devices });
+  const modelSettings = new ModelSettings(store);
+  const autopilot = new Autopilot({ store, orchestrator, voice, devices, runWithModels: (fn) => modelSettings.run(fn) });
+  const feed = new OperatorFeed({ store, autopilot, partners });
+  autopilot.feedPoll = (tripId) => feed.poll(tripId);
+  chatAgent.feed = feed;
+  chatAgent.autopilotTick = (tripId) => autopilot.tick(tripId);
   const conversation = new Conversation({ store, orchestrator, chats, chatAgent, memory, voice, models });
 
   return {
     store, providers, mcp, finance, compliance, voice, travel, booking, recovery, undo, models, orchestrator, rehydrated,
-    memory, expenses, chats, devices, mcpClients, chatAgent, conversation, delhivery, autopilot, feedback, negotiator,
+    memory, expenses, chats, devices, mcpClients, chatAgent, conversation, delhivery, autopilot, feedback, negotiator, modelSettings, partners, feed,
     shutdown() {
       autopilot.stop();
       undo.stopAll();

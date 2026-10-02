@@ -44,3 +44,6 @@ graphify-out/.graphify_root
 Thumbs.db
 .vscode/
 .idea/
+
+# ---- Exported memory (plaintext copy of the encrypted graph) ----
+memory-out/

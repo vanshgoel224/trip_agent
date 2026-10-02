@@ -15,12 +15,19 @@ const ProposalSchema = z.object({
 });
 export type Proposal = z.infer<typeof ProposalSchema> & { source: "ONLINE_MODEL" | "OFFLINE_MODEL" | "RULES" };
 
-type Endpoint = { baseUrl: string; apiKey?: string; model: string };
+import { anthropicChat, currentProviders, PRESETS, toEndpoint, type Endpoint } from "./providers";
+export { withModels, currentProviders, PRESETS, listModels, type ProviderConfig, type ProviderId } from "./providers";
+export type { Endpoint };
 
 // Defaults: Nemotron Ultra on NVIDIA's hosted API (enabled once ONLINE_MODEL_API_KEY
 // is set), Qwen on a local Ollama server (its OpenAI-compatible /v1 endpoint).
 export const DEFAULT_ONLINE = { baseUrl: "https://integrate.api.nvidia.com/v1", model: "nvidia/nemotron-3-ultra-550b-a55b" };
 export const DEFAULT_OFFLINE = { baseUrl: "http://localhost:11434/v1", model: "qwen3:4b" };
+// Default local tier: Hermes Agent's OpenAI-compatible gateway with its own toolset
+// disabled (config/hermes/config.yaml). Its API runs Hermes' tools server-side and
+// does not accept ours, so it is used tool-less: text answers only, actions go
+// through Biruni's deterministic rules.
+export const HERMES_DEFAULT = { baseUrl: "http://127.0.0.1:8642/v1", model: "hermes-agent" };
 
 // Temporary stand-in for Nemotron: Gemini via Google's OpenAI-compatible endpoint
 // (https://ai.google.dev/gemini-api/docs/openai). Used only when GEMINI_API_KEY is
@@ -68,14 +75,21 @@ export async function resolveGeminiModel(apiKey: string, timeoutMs = 10000): Pro
 export const isGeminiAuto = (ep: Endpoint) => ep.baseUrl === GEMINI_BASE_URL && ep.model === "(auto)";
 
 export function offlineEndpoint(): Endpoint | undefined {
-  // OFFLINE_MODEL_CONFIG is JSON: {"baseUrl":"http://localhost:11434/v1","model":"qwen3:4b"}
-  // Set it to "off" to skip the local model entirely.
+  // OFFLINE_MODEL_CONFIG is JSON, e.g. Ollama: {"baseUrl":"http://localhost:11434/v1","model":"qwen3:4b"}
+  // Set it to "off" to skip the local model entirely. Unset → Hermes Agent gateway.
   const raw = process.env.OFFLINE_MODEL_CONFIG;
   if (raw === "off") return undefined;
-  if (!raw) return DEFAULT_OFFLINE;
+  if (!raw)
+    return {
+      baseUrl: process.env.HERMES_URL || HERMES_DEFAULT.baseUrl,
+      model: process.env.HERMES_MODEL || HERMES_DEFAULT.model,
+      apiKey: process.env.HERMES_API_KEY || undefined,
+      provider: "hermes",
+      tools: false,
+    };
   try {
     const c = JSON.parse(raw);
-    return c.baseUrl && c.model ? c : undefined;
+    return c.baseUrl && c.model ? { provider: "ollama", tools: c.tools !== false, ...c } : undefined;
   } catch {
     return undefined;
   }
@@ -116,6 +130,10 @@ export async function chat(ep: Endpoint, user: string, timeoutMs: number, system
 }
 
 async function chatOnce(ep: Endpoint, user: string, timeoutMs: number, system = SYSTEM): Promise<string> {
+  if (ep.provider === "anthropic") {
+    const m = await anthropicChat(ep, [{ role: "system", content: system }, { role: "user", content: user }], undefined, timeoutMs);
+    return String(m.content ?? "");
+  }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -171,8 +189,12 @@ export async function localReachable(ep = offlineEndpoint()): Promise<boolean> {
   if (localHealth && localHealth.key === key && Date.now() - localHealth.at < 30_000) return localHealth.ok;
   let ok = false;
   try {
-    const res = await fetch(`${ep.baseUrl.replace(/\/$/, "")}/models`, { signal: AbortSignal.timeout(800) });
+    const base = ep.baseUrl.replace(/\/$/, "");
+    const headers: Record<string, string> = ep.apiKey ? { authorization: `Bearer ${ep.apiKey}` } : {};
+    const res = await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(800) });
     ok = res.ok;
+    // Hermes also exposes /health at the gateway root.
+    if (!ok && ep.provider === "hermes") ok = (await fetch(`${base.replace(/\/v1$/, "")}/health`, { signal: AbortSignal.timeout(800) })).ok;
   } catch {
     ok = false;
   }
@@ -188,6 +210,8 @@ export async function localReachable(ep = offlineEndpoint()): Promise<boolean> {
  * If every model fails, callers fall back to deterministic rules.
  */
 export async function endpointChain(online: boolean): Promise<(Endpoint & { tier: "online" | "local" })[]> {
+  const user = currentProviders();
+  if (user?.some((p) => p.enabled !== false)) return userChain(user, online);
   const out: (Endpoint & { tier: "online" | "local" })[] = [];
   const local = offlineEndpoint();
   const localOk = local ? await localReachable(local) : false;
@@ -209,13 +233,36 @@ export async function endpointChain(online: boolean): Promise<(Endpoint & { tier
   return out;
 }
 
+/** The user's own providers, in their priority order. Offline: only local ones. */
+async function userChain(list: NonNullable<ReturnType<typeof currentProviders>>, online: boolean) {
+  const out: (Endpoint & { tier: "online" | "local" })[] = [];
+  for (const p of list) {
+    let ep = toEndpoint(p);
+    if (!ep) continue;
+    const local = !!PRESETS[p.provider]?.local;
+    if (!local && !online) continue;
+    if (local && !(await localReachable(ep))) continue;
+    if (ep.provider === "gemini" && ep.model === "(auto)") {
+      try {
+        ep = { ...ep, model: (await resolveGeminiModel(ep.apiKey!)).model };
+      } catch {
+        continue;
+      }
+    }
+    out.push({ ...ep, tier: local ? "local" : "online" });
+  }
+  return out;
+}
+
 export async function chatWithTools(ep: Endpoint, messages: ChatMessage[], tools: ToolSpec[], timeoutMs: number): Promise<ChatMessage> {
-  const once = async (ms: number) => {
+  if (ep.tools === false) tools = []; // tool-less endpoint (Hermes): text only
+  const once = async (ms: number): Promise<ChatMessage> => {
+    if (ep.provider === "anthropic") return (await anthropicChat(ep, messages, tools, ms)) as ChatMessage;
     const res = await fetch(`${ep.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       signal: AbortSignal.timeout(ms),
       headers: { "content-type": "application/json", ...(ep.apiKey ? { authorization: `Bearer ${ep.apiKey}` } : {}) },
-      body: JSON.stringify({ model: ep.model, temperature: 0.2, max_tokens: 1024, messages, tools, tool_choice: "auto" }),
+      body: JSON.stringify({ model: ep.model, temperature: 0.2, max_tokens: 1024, messages: tools.length ? messages.map(stripAnthropic) : flattenTools(messages), ...(tools.length ? { tools, tool_choice: "auto" } : {}) }),
     });
     if (!res.ok) throw new Error(`model HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const j = (await res.json()) as { choices?: { message?: ChatMessage }[] };
@@ -238,6 +285,21 @@ export async function chatWithTools(ep: Endpoint, messages: ChatMessage[], tools
   }
 }
 
+/** For a tool-less endpoint mid-turn: turn earlier tool calls/results into plain text. */
+function flattenTools(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((m) => {
+    if (m.role === "tool") return { role: "user", content: `[tool result] ${String(m.content ?? "").slice(0, 2000)}` };
+    if (m.role === "assistant" && m.tool_calls?.length) return { role: "assistant", content: `${m.content ?? ""}\n[called ${m.tool_calls.map((c) => c.function.name).join(", ")}]`.trim() };
+    return stripAnthropic(m);
+  });
+}
+// Raw Anthropic blocks are only for the Anthropic adapter; other providers reject unknown fields.
+const stripAnthropic = (m: ChatMessage): ChatMessage => {
+  if (!("_anthropic" in m)) return m;
+  const { _anthropic, ...rest } = m;
+  return rest;
+};
+
 export class ModelRouter {
   lastError?: string;
 
@@ -252,17 +314,16 @@ export class ModelRouter {
   }
 
   async propose(text: string, online: boolean): Promise<Proposal> {
-    let ep = online ? onlineEndpoint() : offlineEndpoint();
-    if (ep) {
+    const chain = await endpointChain(online).catch(() => []);
+    for (const ep of chain.slice(0, 2)) {
       try {
-        if (isGeminiAuto(ep)) ep = { ...ep, model: (await resolveGeminiModel(ep.apiKey!)).model };
         const raw = await chat(ep, text, this.timeoutMs);
         const p = ProposalSchema.parse(extractJson(raw));
         this.lastError = undefined;
-        return { ...p, source: online ? "ONLINE_MODEL" : "OFFLINE_MODEL" };
+        return { ...p, source: ep.tier === "online" ? "ONLINE_MODEL" : "OFFLINE_MODEL" };
       } catch (e) {
-        // Fall through to deterministic rules; keep the reason visible in /api/health.
-        this.lastError = `${online ? "online" : "offline"}: ${e instanceof Error ? e.message : e}`;
+        // Fall through to the next model, then deterministic rules; reason visible in /api/health.
+        this.lastError = `${ep.tier}: ${e instanceof Error ? e.message : e}`;
       }
     }
     return rulesProposal(text);

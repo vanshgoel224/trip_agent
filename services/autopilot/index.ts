@@ -24,7 +24,7 @@ const LEAVE_BUFFER_MIN = Number(process.env.AUTOPILOT_LEAVE_BUFFER_MIN ?? 30);
 export class Autopilot {
   private timer?: NodeJS.Timeout;
   private busy = false;
-  constructor(private d: { store: Store; orchestrator: Orchestrator; voice: VoiceAgent; devices: Devices }) {}
+  constructor(private d: { store: Store; orchestrator: Orchestrator; voice: VoiceAgent; devices: Devices; runWithModels?: <T>(fn: () => T) => T }) {}
 
   // ---------- settings ----------
   enabled(tripId: string) {
@@ -66,7 +66,7 @@ export class Autopilot {
   // ---------- loop ----------
   start(ms = Number(process.env.AUTOPILOT_TICK_MS ?? 60_000)) {
     this.stop();
-    this.timer = setInterval(() => void this.tickAll(), ms);
+    this.timer = setInterval(() => void (this.d.runWithModels ? this.d.runWithModels(() => this.tickAll()) : this.tickAll()), ms);
   }
   stop() {
     if (this.timer) clearInterval(this.timer);
@@ -83,8 +83,12 @@ export class Autopilot {
   }
 
   /** One autonomous pass over a trip. Returns the decisions taken this tick. */
+  /** Set by the runtime: pulls real-world status (partners, flights) before each decision pass. */
+  feedPoll?: (tripId: string) => Promise<unknown>;
+
   async tick(tripId: string): Promise<Decision[]> {
     const out: Decision[] = [];
+    await this.feedPoll?.(tripId).catch(() => {});
     const o = this.d.orchestrator;
     const trip = o.trip(tripId);
     if (!this.enabled(tripId)) return out;

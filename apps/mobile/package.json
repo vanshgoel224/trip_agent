@@ -1,0 +1,16 @@
+{
+  "name": "biruni-mobile",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Android shell (Capacitor) for the Biruni web app. The APK opens your Biruni server; all logic and data stay on that server.",
+  "scripts": {
+    "sync": "cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.2",
+    "@capacitor/core": "8.5.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.2"
+  }
+}
