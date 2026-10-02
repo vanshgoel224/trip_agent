@@ -71,6 +71,7 @@ export const CHAT_TOOLS: ToolSpec[] = [
     description: str("What it was for"), amount: { type: "number", description: "Total in INR" }, paid_by: str("Who paid"),
     split_among: { type: "array", items: { type: "string" }, description: "People sharing it equally (include the payer if they share)" },
     exact_shares: { type: "object", additionalProperties: { type: "number" }, description: "Optional exact amounts per person instead of equal split" },
+    confirm_duplicate: { type: "boolean", description: "Only true if the traveller confirmed an identical expense is genuinely a second one" },
   }, ["description", "amount", "paid_by"]),
   fn("list_expenses", "List recorded group expenses."),
   fn("get_balances", "Who owes whom: net balances and the fewest transfers to settle up."),
@@ -123,7 +124,7 @@ Rules:
 - Reply in the traveller's language and style (English, Hindi or Hinglish) unless this chat says otherwise. Be short and speakable; plain text, no tables.`;
   }
 
-  async respond(chat: Chat, text: string): Promise<{ reply: string; source: string; tools: string[] } | undefined> {
+  async respond(chat: Chat, text: string, hint?: string): Promise<{ reply: string; source: string; tools: string[] } | undefined> {
     const tripId = chat.tripId;
     const online = tripId ? getRuntime(this.d.store, tripId).online : true;
     let ep;
@@ -137,7 +138,7 @@ Rules:
 
     const o = this.d.orchestrator;
     const used: string[] = [];
-    const notes: string[] = [];
+    const notes: string[] = hint ? [hint] : [];
 
     // Deterministic safety pre-check in every chat: escalate before asking any model.
     if (tripId && classifyDisruption(text) === "SAFETY") {
@@ -280,7 +281,7 @@ Rules:
       case "recall_memory":
         return { facts: memory.recall(String(a.query), 30) };
       case "add_expense": {
-        const x = expenses.add(group, { description: String(a.description), amount: Number(a.amount), paidBy: String(a.paid_by), splitAmong: a.split_among, exactShares: a.exact_shares });
+        const x = expenses.add(group, { description: String(a.description), amount: Number(a.amount), paidBy: String(a.paid_by), splitAmong: a.split_among, exactShares: a.exact_shares, confirmDuplicate: a.confirm_duplicate === true });
         for (const p of new Set([x.paidBy, ...Object.keys(x.shares)])) if (p !== "Me") memory.remember({ subject: "Me", subject_type: "traveller", relation: "shares_expenses_with", object: p, object_type: "person" }, chat.chatId, "EXTRACTED");
         return { expense: x, balances: expenses.balances(group) };
       }

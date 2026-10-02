@@ -12,7 +12,7 @@ export type LocationReading = { lat: number; lng: number; accuracy?: number; spe
 export type ImpactReading = { peakG: number; stillSeconds?: number; at: string };
 
 export const IMPACT_G = Number(process.env.IMPACT_G ?? 3.5);
-export const CHECKIN_MS = Number(process.env.CRASH_CHECKIN_MS ?? 30_000);
+const checkinMs = () => Number(process.env.CRASH_CHECKIN_MS ?? 30_000);
 
 type Escalate = (tripId: string, description: string) => Promise<unknown>;
 type Ask = (tripId: string, text: string) => Promise<unknown>;
@@ -57,16 +57,16 @@ export class Devices {
     this.store.put("device_readings", id("IMP"), reading, { tripId, key: "IMPACT" });
     if (r.peakG < IMPACT_G || this.checkins.has(tripId)) return { checkin: false, reason: r.peakG < IMPACT_G ? "below threshold" : "check-in already running" };
     bus.emitEvent({ tripId, agent: "device", type: "IMPACT", detail: `Hard impact ${r.peakG.toFixed(1)}g${r.stillSeconds ? `, still for ${r.stillSeconds}s` : ""} — asking if traveller is OK` });
-    await this.hooks?.ask(tripId, `I felt a hard jolt on your phone. Are you OK? Tap "I'm OK" within ${Math.round(CHECKIN_MS / 1000)} seconds or I'll treat this as a safety emergency.`);
+    await this.hooks?.ask(tripId, `I felt a hard jolt on your phone. Are you OK? Tap "I'm OK" within ${Math.round(checkinMs() / 1000)} seconds or I'll treat this as a safety emergency.`);
     this.checkins.set(
       tripId,
       setTimeout(async () => {
         this.checkins.delete(tripId);
         bus.emitEvent({ tripId, agent: "device", type: "IMPACT", detail: "No response to check-in — escalating as SAFETY" });
         await this.hooks?.escalate(tripId, `Possible accident: phone sensors detected a ${r.peakG.toFixed(1)}g impact and the traveller did not respond`).catch(() => {});
-      }, CHECKIN_MS),
+      }, checkinMs()),
     );
-    return { checkin: true, seconds: Math.round(CHECKIN_MS / 1000) };
+    return { checkin: true, seconds: Math.round(checkinMs() / 1000) };
   }
 
   imOk(tripId: string) {

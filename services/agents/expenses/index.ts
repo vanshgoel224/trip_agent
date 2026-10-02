@@ -23,9 +23,13 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 export class ExpenseAgent {
   constructor(private store: Store) {}
 
-  add(groupId: string, e: { description: string; amount: number; paidBy: string; splitAmong?: string[]; exactShares?: Record<string, number> }): Expense {
+  add(groupId: string, e: { description: string; amount: number; paidBy: string; splitAmong?: string[]; exactShares?: Record<string, number>; confirmDuplicate?: boolean }): Expense {
     if (!(e.amount > 0)) throw new Error("amount must be positive");
     const paidBy = norm(e.paidBy);
+    // Duplicate guard: models re-read chat history and may record the same expense twice.
+    const dup = this.list(groupId).find((x) => x.kind === "EXPENSE" && x.paidBy === paidBy && Math.abs(x.amount - e.amount) < 0.01 && Date.now() - new Date(x.at).getTime() < 10 * 60_000);
+    if (dup && !e.confirmDuplicate)
+      throw new Error(`Already recorded: ${dup.paidBy} paid ${inr(dup.amount)} for "${dup.description}" (${dup.expenseId}). Not adding it again; only if the traveller confirms this is a separate second expense, call add_expense with confirm_duplicate=true.`);
     let shares: Record<string, number>;
     if (e.exactShares && Object.keys(e.exactShares).length) {
       shares = Object.fromEntries(Object.entries(e.exactShares).map(([k, v]) => [norm(k), round2(v)]));

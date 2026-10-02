@@ -24,7 +24,9 @@ export function createProviders(mode = config.providerMode): Providers {
   return {
     voice: live("GNANI_API_KEY") ? new GnaniProvider() : new MockGnaniProvider(),
     payments: live("PINELABS_API_KEY") ? new PineLabsProvider() : new MockPaymentProvider(),
-    routing: live("DELHIVERY_API_KEY") ? new DelhiveryProvider() : new MockRoutingProvider(),
+    // Delhivery has no bus/train inventory API; alternatives stay simulated. Delhivery Maps
+    // (geocode/route) is connected as an MCP server when DELHIVERY_MAPS_TOKEN is set.
+    routing: mode === "live" ? new DelhiveryProvider() : new MockRoutingProvider(),
     booking: new MockBookingProvider(), // no booking rail is named in the design artifact
     financial: live("SETU_API_KEY") ? new SetuProvider() : new MockSetuProvider(),
     holdings: live("ZERODHA_API_KEY") ? new ZerodhaProvider() : new MockZerodhaProvider(),

@@ -27,6 +27,9 @@ export const DEFAULT_OFFLINE = { baseUrl: "http://localhost:11434/v1", model: "q
 // is picked from the key's own model list (see resolveGeminiModel).
 export const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
 let geminiModel: string | undefined = process.env.GEMINI_MODEL || undefined;
+let geminiStrong: string | undefined;
+/** A stronger (slower) Gemini model for harder jobs, e.g. low-resource language translation. */
+export const geminiStrongModel = () => geminiStrong;
 
 export function onlineEndpoint(): Endpoint | undefined {
   const apiKey = process.env.ONLINE_MODEL_API_KEY;
@@ -57,6 +60,7 @@ export async function resolveGeminiModel(apiKey: string, timeoutMs = 10000): Pro
   const pick = byNewest.find((m) => /-flash-lite$/.test(m)) ?? byNewest.find((m) => /-flash$/.test(m)) ?? byNewest[0];
   if (!pick) throw new Error("no usable Gemini text model for this key");
   geminiModel = pick;
+  geminiStrong = byNewest.find((m) => /-flash$/.test(m)) ?? pick;
   return { model: pick, available };
 }
 

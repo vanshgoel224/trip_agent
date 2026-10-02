@@ -7,7 +7,7 @@ import type { ChatAgent } from "./orchestrator/chat-agent";
 import type { Chats, ChatMode } from "./orchestrator/chats";
 import type { MemoryGraph } from "./memory";
 import type { VoiceAgent } from "./agents/voice";
-import { chat as modelChat, resolveEndpoint, type ModelRouter } from "./models";
+import { chat as modelChat, geminiStrongModel, resolveEndpoint, type ModelRouter } from "./models";
 
 // Languages for translation. Gnani (voice) covers the first ten; the rest use
 // text translation plus the browser's speech engines where the device has them.
@@ -27,6 +27,22 @@ export const LANGUAGES: { code: string; name: string; gnani: boolean }[] = [
 ];
 const langName = (code: string) => LANGUAGES.find((l) => l.code === code)?.name ?? code;
 
+// Unicode blocks per language, to catch a model answering in the wrong script.
+const SCRIPTS: Record<string, RegExp> = {
+  hi: /[\u0900-\u097F]/, mr: /[\u0900-\u097F]/, ne: /[\u0900-\u097F]/, kok: /[\u0900-\u097F]/, mai: /[\u0900-\u097F]/,
+  sa: /[\u0900-\u097F]/, doi: /[\u0900-\u097F]/, brx: /[\u0900-\u097F]/, bn: /[\u0980-\u09FF]/, as: /[\u0980-\u09FF]/,
+  pa: /[\u0A00-\u0A7F]/, gu: /[\u0A80-\u0AFF]/, or: /[\u0B00-\u0B7F]/, ta: /[\u0B80-\u0BFF]/, te: /[\u0C00-\u0C7F]/,
+  kn: /[\u0C80-\u0CFF]/, ml: /[\u0D00-\u0D7F]/, ur: /[\u0600-\u06FF]/, ks: /[\u0600-\u06FF]/, sd: /[\u0600-\u06FF]/,
+  mni: /[\u0980-\u09FF\uABC0-\uABFF]/, sat: /[\u1C50-\u1C7F]/, en: /[A-Za-z]/,
+};
+/** Share of letters in the expected script (1 = all correct). */
+export function scriptScore(text: string, code: string): number {
+  const re = SCRIPTS[code.split("-")[0]];
+  if (!re) return 1;
+  const letters = [...text].filter((ch) => /\p{L}/u.test(ch));
+  return letters.length ? letters.filter((ch) => re.test(ch)).length / letters.length : 0;
+}
+
 type Deps = { store: Store; orchestrator: Orchestrator; chats: Chats; chatAgent: ChatAgent; memory: MemoryGraph; voice: VoiceAgent; models: ModelRouter };
 
 export class Conversation {
@@ -38,13 +54,16 @@ export class Conversation {
     return c;
   }
 
-  async send(chatId: string, text: string) {
+  async send(chatId: string, text: string, hints: { targetLanguage?: string; sourceLanguage?: string } = {}) {
     const chat = this.d.chats.get(chatId);
     if (!chat) throw new Error("unknown chat");
     const clean = text.trim().slice(0, 4000);
     if (!clean) throw new Error("empty message");
     this.d.chats.add(chatId, { role: "user", text: clean });
-    let out = await this.d.chatAgent.respond(chat, clean);
+    const hint = chat.mode === "translate" && hints.targetLanguage
+      ? `Translator settings from the app: source ${hints.sourceLanguage && hints.sourceLanguage !== "auto" ? langName(hints.sourceLanguage) : "auto-detect"}, target ${langName(hints.targetLanguage)} (use this target unless the latest message names another language).`
+      : undefined;
+    let out = await this.d.chatAgent.respond(chat, clean, hint);
     if (!out) {
       // No model reachable: deterministic rules (disruption/undo/approve/status) still work.
       if (chat.tripId) {
@@ -58,15 +77,24 @@ export class Conversation {
     return { chat: this.d.chats.get(chatId), message: msg, tools: out.tools, source: out.source };
   }
 
-  /** Text translation between any two languages via the LLM. */
-  async translate(text: string, from: string, to: string): Promise<{ translation: string; pronunciation?: string; source: string }> {
+  /** Text translation between any two languages via the LLM, with a script sanity check. */
+  async translate(text: string, from: string, to: string): Promise<{ translation: string; pronunciation?: string; source: string; warning?: string }> {
     const ep = await resolveEndpoint(true).catch(() => undefined);
     if (!ep) throw new Error("Translation needs a language model: set GEMINI_API_KEY or ONLINE_MODEL_API_KEY");
-    const prompt = `Translate from ${from === "auto" ? "the detected language" : langName(from)} to ${langName(to)}. Return ONLY JSON: {"translation": "<in native script>", "pronunciation": "<Latin-script reading of the translation>"}.\nText: ${text}`;
-    const raw = await modelChat(ep, prompt, 20_000);
-    const body = raw.replace(/<think>[\s\S]*?<\/think>/gi, "");
-    const j = JSON.parse(body.slice(body.indexOf("{"), body.lastIndexOf("}") + 1));
-    return { translation: String(j.translation ?? "").trim(), pronunciation: j.pronunciation, source: ep.model };
+    const prompt = `Translate from ${from === "auto" ? "the detected language" : langName(from)} to ${langName(to)}. Write the translation ONLY in ${langName(to)}'s own script. Return ONLY JSON: {"translation": "<in ${langName(to)} script>", "pronunciation": "<Latin-script reading>"}.\nText: ${text}`;
+    const run = async (model: string) => {
+      const raw = await modelChat({ ...ep, model }, prompt, 20_000);
+      const body = raw.replace(/<think>[\s\S]*?<\/think>/gi, "");
+      const j = JSON.parse(body.slice(body.indexOf("{"), body.lastIndexOf("}") + 1));
+      return { translation: String(j.translation ?? "").trim(), pronunciation: j.pronunciation as string | undefined, source: model };
+    };
+    let out = await run(ep.model);
+    if (scriptScore(out.translation, to) < 0.85) {
+      const strong = geminiStrongModel();
+      if (strong && strong !== ep.model) out = await run(strong).catch(() => out);
+    }
+    const score = scriptScore(out.translation, to);
+    return score < 0.85 ? { ...out, warning: `Output may not be fully in ${langName(to)} script (${Math.round(score * 100)}% match); double-check with a native speaker.` } : out;
   }
 
   /** Voice translation: speech (or text) in → translated text + speech out. */

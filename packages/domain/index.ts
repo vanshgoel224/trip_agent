@@ -151,7 +151,8 @@ export type StopReason =
   | "OBLIGATION_AT_RISK"
   | "SAFETY_INVOLVED"
   | "ALL_PATHS_FAILED"
-  | "VERIFIED_WAY_HOME";
+  | "VERIFIED_WAY_HOME"
+  | "TRAVELLER_ACTION_REQUIRED"; // e.g. a live gateway needs the traveller to complete a payment link
 
 export type Incident = {
   incidentId: string;

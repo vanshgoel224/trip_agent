@@ -47,6 +47,15 @@ export class McpConnections {
     } catch {
       /* ignore malformed env */
     }
+    // Delhivery Maps publishes an MCP server (geocode, reverse geocode, route, distance matrix).
+    // URL from delhivery.com/maps/developer; the token is used as a Bearer token (verify in their docs).
+    if (process.env.DELHIVERY_MAPS_TOKEN) {
+      this.store.put("mcp_servers", "ENV-delhivery_maps", {
+        serverId: "ENV-delhivery_maps", name: "delhivery_maps", transport: "http",
+        url: process.env.DELHIVERY_MAPS_MCP_URL || "https://gateway-maps-pub-int.delhivery.com/mcp",
+        headers: { Authorization: `Bearer ${process.env.DELHIVERY_MAPS_TOKEN}` }, source: "env", createdAt: nowIso(),
+      } satisfies McpServerConfig);
+    }
   }
 
   configs() {

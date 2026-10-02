@@ -2,75 +2,165 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0a0a" />
   <title>Biruni</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="top">
-    <div>
-      <h1>BIRUNI</h1>
-      <p class="tag">Getting you home safe</p>
-    </div>
-    <div class="controls">
-      <label class="toggle"><input type="checkbox" id="online" checked /> Online</label>
-      <label class="toggle"><input type="checkbox" id="speak" checked /> Speak readbacks</label>
-      <button id="battery" class="ghost" title="Simulate critical battery">Battery 4%</button>
-    </div>
-  </header>
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <span class="logo">◐</span><span class="name">Biruni</span>
+        <button class="icon-btn only-mobile" id="closeSidebar" aria-label="Close menu">✕</button>
+      </div>
+      <button class="new-chat" id="newChatBtn">＋ New chat</button>
+      <div class="mode-menu hidden" id="modeMenu"></div>
 
-  <section class="scenarios" id="scenarios" aria-label="Demo scenarios"></section>
-
-  <main class="grid">
-    <section class="card" id="tripCard">
-      <h2>Trip status</h2>
-      <div id="tripLine" class="big muted">Pick a scenario to start</div>
-      <div id="tripMeta" class="muted small"></div>
-
-      <div id="disruption" class="alert hidden"></div>
-
-      <h2>Recovery</h2>
-      <ul id="checklist" class="checklist"></ul>
-
-      <div id="approval" class="approval hidden">
-        <p id="approvalText"></p>
-        <div class="row">
-          <button id="approve">Approve</button>
-          <button id="decline" class="ghost">Decline</button>
+      <div class="side-section">
+        <div class="side-label">Trip</div>
+        <div class="trip-row">
+          <select id="tripSelect" aria-label="Active trip"><option value="">No trip</option></select>
+          <button class="icon-btn" id="newTripBtn" title="New trip">＋</button>
         </div>
       </div>
 
-      <dl id="result" class="result hidden">
-        <dt>New route</dt><dd id="newRoute"></dd>
-        <dt>Cost</dt><dd id="cost"></dd>
-        <dt>Remaining authority</dt><dd id="remaining"></dd>
-        <dt>Free balance after obligations</dt><dd id="free"></dd>
-      </dl>
+      <nav class="chat-list" id="chatList" aria-label="Chats"></nav>
 
-      <button id="undo" class="undo hidden">UNDO <span id="undoSecs"></span></button>
+      <div class="side-footer">
+        <button class="side-link" id="memoryBtn">⌘ Memory graph</button>
+        <button class="side-link" id="connBtn">⚙ Connections</button>
+        <div class="toggles">
+          <label><input type="checkbox" id="online" checked /> Online</label>
+          <label><input type="checkbox" id="speak" /> Speak replies</label>
+          <label><input type="checkbox" id="gps" /> Share location</label>
+          <label><input type="checkbox" id="motion" /> Crash detection</label>
+        </div>
+      </div>
+    </aside>
 
-      <h2>Itinerary</h2>
-      <ol id="itinerary" class="itinerary"></ol>
-    </section>
+    <!-- Main chat -->
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn only-mobile" id="openSidebar" aria-label="Menu">☰</button>
+        <div class="chat-title" id="chatTitle">Biruni</div>
+        <button class="pill" id="tripBtn">Trip ▸</button>
+      </header>
 
-    <section class="card">
-      <h2>Conversation</h2>
-      <div id="thread" class="thread" aria-live="polite"></div>
-      <form id="say" class="say">
-        <input id="text" autocomplete="off" placeholder='Try "My bus was cancelled", "undo", "yes", "status"' />
-        <button type="button" id="mic" class="ghost" title="Speak (browser speech recognition)">🎤</button>
-        <button type="submit">Send</button>
+      <div class="checkin hidden" id="checkin">
+        <span>⚠ Hard jolt detected. Are you OK?</span>
+        <button id="imOk">I'm OK</button>
+      </div>
+
+      <section class="messages" id="messages" aria-live="polite">
+        <div class="hero" id="hero">
+          <div class="hero-logo">◐</div>
+          <h1>Where to?</h1>
+          <p class="muted">Plans, disruptions, translation, splitting bills, maps — one place.</p>
+          <div class="chips" id="modeChips"></div>
+        </div>
+      </section>
+
+      <div class="translate-bar hidden" id="translateBar">
+        <select id="fromLang" aria-label="From language"></select>
+        <button class="icon-btn" id="swapLang" title="Swap">⇄</button>
+        <select id="toLang" aria-label="To language"></select>
+        <button class="pill accent" id="voiceTranslate" title="Speak to translate">🎙 Speak & translate</button>
+      </div>
+
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Ask Biruni anything…" autocomplete="off"></textarea>
+        <button type="button" class="icon-btn" id="mic" title="Voice input">🎤</button>
+        <button type="submit" class="send" id="send" aria-label="Send">↑</button>
       </form>
-      <p class="muted small">Voice: Gnani in production. In mock mode the browser's speech APIs stand in for Gnani audio.</p>
-    </section>
+      <p class="foot muted" id="footNote">Biruni can book within ₹2,000 per disruption on its own. Every action can be undone for 30 seconds.</p>
+    </main>
 
-    <section class="card">
-      <h2>Agent activity</h2>
-      <p class="muted small">Actions and statuses only — no model chain-of-thought.</p>
-      <ol id="activity" class="activity"></ol>
-    </section>
-  </main>
+    <!-- Trip drawer -->
+    <aside class="drawer hidden" id="drawer">
+      <header class="drawer-head">
+        <strong>Trip</strong>
+        <button class="icon-btn" id="closeDrawer" aria-label="Close">✕</button>
+      </header>
+      <div class="drawer-body">
+        <div id="tripCard" class="card muted">No trip selected.</div>
+        <div id="recoveryCard" class="card hidden"></div>
+        <div class="card">
+          <div class="card-title">Map <span class="muted small" id="mapNote"></span></div>
+          <div id="map"></div>
+          <ol id="routeSteps" class="steps"></ol>
+        </div>
+        <div class="card">
+          <div class="card-title">Agent activity</div>
+          <ol id="activity" class="activity"></ol>
+        </div>
+      </div>
+    </aside>
+  </div>
 
+  <!-- Modals -->
+  <dialog id="tripDialog">
+    <form method="dialog" id="tripForm" class="modal">
+      <h2>New trip</h2>
+      <label>Your name <input name="name" placeholder="Vansh" /></label>
+      <div class="grid2">
+        <label>From <input name="origin" required placeholder="Pune" /></label>
+        <label>To <input name="destination" required placeholder="Goa" /></label>
+      </div>
+      <div class="grid2">
+        <label>Departure <input name="departure" type="datetime-local" required /></label>
+        <label>Mode
+          <select name="mode"><option>BUS</option><option>TRAIN</option><option>FLIGHT</option><option>CAB</option></select>
+        </label>
+      </div>
+      <div class="grid2">
+        <label>Fare (₹) <input name="fare" type="number" min="0" value="1500" /></label>
+        <label>Daily ceiling (₹) <input name="dailyCeiling" type="number" min="0" value="3000" /></label>
+      </div>
+      <p class="muted small">Bank balance, obligations and alternative buses are simulated in this prototype.</p>
+      <div class="row end">
+        <button value="cancel" class="pill">Cancel</button>
+        <button value="ok" class="pill accent">Create trip</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="connDialog">
+    <div class="modal wide">
+      <div class="row between"><h2>Connections</h2><button class="icon-btn" data-close>✕</button></div>
+      <div id="connList" class="conn-list"></div>
+      <h3>External MCP servers</h3>
+      <p class="muted small">Add an HTTP MCP server; its tools become available in General chats. Local (stdio) servers can only be configured server-side via <code>BIRUNI_MCP_SERVERS</code>.</p>
+      <div id="mcpList"></div>
+      <form id="mcpForm" class="mcp-form">
+        <input name="name" placeholder="Name (e.g. weather)" required />
+        <input name="url" placeholder="https://example.com/mcp" required />
+        <select name="transport"><option value="http">Streamable HTTP</option><option value="sse">SSE</option></select>
+        <input name="auth" placeholder="Authorization header (optional)" />
+        <button class="pill accent">Connect</button>
+      </form>
+      <h3>Demo scenarios</h3>
+      <p class="muted small">Competition scenarios on simulated rails. Each opens a recovery chat.</p>
+      <div id="scenarioList" class="chips left"></div>
+    </div>
+  </dialog>
+
+  <dialog id="memDialog">
+    <div class="modal wide">
+      <div class="row between"><h2>Memory graph</h2><button class="icon-btn" data-close>✕</button></div>
+      <p class="muted small">Everything Biruni remembers, shared across chats, stored in graphify's node-link format.</p>
+      <svg id="graph" viewBox="0 0 800 460" role="img" aria-label="Memory graph"></svg>
+      <pre id="memReport" class="report"></pre>
+      <div class="row end">
+        <a class="pill" href="/api/memory/graph" target="_blank" rel="noopener">graph.json</a>
+        <button class="pill accent" id="memExport">Export to memory-out/</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="app.js" type="module"></script>
 </body>
 </html>

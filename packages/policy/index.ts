@@ -143,6 +143,8 @@ export function stopReasonFor(code: string | undefined): StopReason | undefined 
       return "SAFETY_INVOLVED";
     case "VERIFIED_WAY_HOME":
       return "VERIFIED_WAY_HOME";
+    case "USER_REQUIRED":
+      return "TRAVELLER_ACTION_REQUIRED";
     default:
       return undefined;
   }

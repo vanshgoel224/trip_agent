@@ -35,7 +35,7 @@ export const CHAT_MODES: Record<ChatMode, { label: string; icon: string; prompt:
   splitwise: {
     label: "Split expenses",
     icon: "₹",
-    prompt: "Track group expenses like Splitwise. Record each expense with who paid and who shares it, keep balances, and suggest the fewest transfers to settle up. Use 'Me' for the traveller. Confirm amounts in ₹.",
+    prompt: "Track group expenses like Splitwise. Earlier expenses in this chat are ALREADY saved: record only new expenses from the latest message. Record each expense with who paid and who shares it, keep balances, and suggest the fewest transfers to settle up. Use 'Me' for the traveller. Confirm amounts in ₹.",
     tools: [...EXPENSES, "remember", "recall_memory"],
   },
   discover: {
