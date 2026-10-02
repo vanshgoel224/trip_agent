@@ -26,6 +26,7 @@ import { Delhivery } from "./integrations/delhivery";
 import { PartnerHub } from "./integrations/partners";
 import { OperatorFeed } from "./feed";
 import { Telephony } from "./telephony";
+import { Style } from "./style";
 import { Autopilot } from "./autopilot";
 import { ModelSettings } from "./models/settings";
 import { Feedback } from "./feedback";
@@ -103,6 +104,8 @@ export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; pro
   const modelSettings = new ModelSettings(store);
   const autopilot = new Autopilot({ store, orchestrator, voice, devices, runWithModels: (fn) => (opts.context ?? ((f) => f()))(() => modelSettings.run(fn)) });
   const telephony = new Telephony({ negotiator });
+  const style = new Style(store);
+  chatAgent.style = style;
   negotiator.telephony = telephony;
   const feed = new OperatorFeed({ store, autopilot, partners });
   autopilot.feedPoll = (tripId) => feed.poll(tripId);
@@ -112,7 +115,7 @@ export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; pro
 
   return {
     store, providers, mcp, finance, compliance, voice, travel, booking, recovery, undo, models, orchestrator, rehydrated,
-    memory, expenses, chats, devices, mcpClients, chatAgent, conversation, delhivery, autopilot, feedback, negotiator, modelSettings, partners, feed, telephony,
+    memory, expenses, chats, devices, mcpClients, chatAgent, conversation, delhivery, autopilot, feedback, negotiator, modelSettings, partners, feed, telephony, style,
     shutdown() {
       autopilot.stop();
       undo.stopAll();

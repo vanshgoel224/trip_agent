@@ -218,6 +218,44 @@ Honest limits:
 - **Volume and power buttons can't be read by a web app.** That's why there's the shake and voice cancel instead.
 - **Motion sensors only run while the app is open.** A web app can't detect drops with the screen off or the app closed; that needs a native background service.
 
+## My style (talk like you) and your voice
+
+**🗣️ My style** (sidebar) teaches Biruni how you talk:
+- your words with their meanings (`scene = situation`, `jugaad = quick fix`), and phrases you use;
+- how to address you: aap, tum or tu;
+- your language mix and region or dialect.
+
+It's stored encrypted and added to the AI's instructions **as data only**. Anything that reads like an instruction ("ignore…", "approve…", "spend…") is refused, and style never changes prices, safety advice or what needs your approval.
+
+Live example with your Gemini key, same question before and after:
+- **Before:** "I cannot access your trip details…"
+- **After:** "Arre, **tension nahi lene ka**! Train late hone ka **scene** ho gaya hai… kahan ja raha hai **tu**?"
+
+**My voice:**
+- Record 20–60 s reading a short passage, confirm it's your own voice, and the sample is stored encrypted. You can delete it any time.
+- **Voice cloning isn't connected.** It would be done by Gnani, but I couldn't verify that Gnani offers cloning or its API, so nothing is sent anywhere until that's confirmed. The app says so.
+
+## Speed and multiple models
+
+- **Several models in a chain:** list your models in Settings → Models (Claude, Gemini, DeepSeek, Groq, NVIDIA and others). The server's `.env` model is always kept as a backup behind yours.
+- **Racing:** if a model is slow (more than 2.5 s, `MODEL_HEDGE_MS`), the next one is started in parallel and the first answer wins.
+- **Benching:** a model that's rate-limited (429), failing (5xx), unauthorised or retired is skipped for a while, so the next turns go straight to a working model.
+- **One Gemini key, several models:** Biruni rotates through fast Gemini *flash-lite* versions, each with its own free-tier limit, before slower *flash*.
+- **Short timeouts:** classification has a 4 s cap and the self-check 5 s; past those, the rules or the unchecked reply are used.
+- **Measured with the live agent check** (`npm run agent:check`, 13 turns, Gemini free tier): **median 2.4 s, slowest 3.4 s**, 31/31 checks.
+- **The real ceiling is the free-tier limit.** A second provider key (Groq or DeepSeek are fast and cheap) removes it.
+
+## Testing
+
+| Command | What it does |
+|---|---|
+| `npm run check` | typecheck, browser syntax, secret scan |
+| `npm test` | 100+ unit/integration tests |
+| `npm run test:e2e` | real server: ~1,000 hostile requests, remote MCP, drop→SOS, account CRUD, compression |
+| `npm run agent:check` | live AI walkthrough of a Pune→Goa trip (memory, recovery, undo, expenses, translation, booking, haggling, operator SMS, maps, safety, `/btw`, SOS, drop) |
+| `npm run agent:check:hard` | adversarial: over-limit demands, prompt injection, gibberish, 4,500-character input, burst messages, late undo, broken first model, contradictions, Hindi-only safety |
+| `npm run load:test -- --users 40 --rounds 3` | 40 concurrent users: 0 errors, app requests p50 ~10 ms / p95 < 140 ms, memory flat |
+
 ## Permissions, photos, effects, data
 
 - **🛡️ Permissions** (sidebar) shows location, microphone, camera, motion, notifications and storage:

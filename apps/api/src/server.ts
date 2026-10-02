@@ -27,9 +27,10 @@ import deals from "./routes/deals";
 import feedback from "./routes/feedback";
 import social from "./routes/social";
 import fallRoutes, { falls } from "./routes/falls";
+import styleRoutes from "./routes/style";
 
 const router = new Router();
-for (const register of [trips, chat, device, travel, models, connections, autopilot, deals, feedback, social, fallRoutes]) register(router.route);
+for (const register of [trips, chat, device, travel, models, connections, autopilot, deals, feedback, social, fallRoutes, styleRoutes]) register(router.route);
 
 const WEB_ROOT = fileURLToPath(new URL("../../web/", import.meta.url));
 const isSecure = (req: IncomingMessage) => req.headers["x-forwarded-proto"] === "https" || (req.socket as { encrypted?: boolean }).encrypted === true || process.env.BIRUNI_SECURE === "1";

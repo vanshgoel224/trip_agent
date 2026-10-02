@@ -10,6 +10,7 @@ import { initBattery, power } from "./modules/battery.js";
 import { initFall } from "./modules/fall.js";
 import { initPermissions } from "./modules/permissions.js";
 import { initEffects, sfx, toast, flash } from "./modules/effects.js";
+import { initStyle } from "./modules/style.js";
 const $ = (id) => document.getElementById(id);
 const inr = (n) => F.inr(n);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -1133,7 +1134,7 @@ let started = false;
 const features = {};
 function startFeatures() {
   const deps = { $, api, esc, S, store, secureLocal };
-  for (const [name, init] of [["effects", initEffects], ["legal", initLegal], ["sos", initSos], ["people", initPeople], ["battery", initBattery], ["permissions", initPermissions], ["fall", initFall]]) {
+  for (const [name, init] of [["effects", initEffects], ["legal", initLegal], ["sos", initSos], ["people", initPeople], ["battery", initBattery], ["permissions", initPermissions], ["style", initStyle], ["fall", initFall]]) {
     try {
       features[name] = init(deps) ?? {};
     } catch (e) {
