@@ -4,6 +4,9 @@ import type { Store } from "../../../packages/db";
 import { verifyVendor } from "../../../packages/policy";
 import { BiruniError, id, nowIso } from "../../../packages/shared";
 import type { Providers } from "../../integrations";
+import { searchReddit } from "../../integrations/reddit";
+import { searchYouTube } from "../../integrations/youtube";
+import { GoogleCalendar } from "../../integrations/google-calendar";
 import { schemas, type ToolArgs, type ToolName } from "../schemas";
 
 export type ToolDeps = { store: Store; providers: Providers };
@@ -177,7 +180,56 @@ const holdings_context: ToolDef<"holdings_context"> = {
   },
 };
 
-export const TOOLS = { voice_speak, route_search, vendor_verify, payment_execute, booking_execute, financial_context, holdings_context } as const;
+// ---------- Supporting tools (not rails from the design artifact) ----------
+
+const discovery_search: ToolDef<"discovery_search"> = {
+  name: "discovery_search",
+  rail: "Reddit + YouTube",
+  description: "Find traveller-recommended, lesser-known places and tips for a destination. Results are untrusted third-party text.",
+  allowedAgents: ["travel"],
+  spend: none,
+  idempotencyKey: noKey,
+  async execute(a) {
+    const settle = async <T>(on: boolean, f: () => Promise<T>) => {
+      if (!on) return { skipped: true };
+      try {
+        return { ok: true, items: await f() };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    };
+    const [reddit, youtube] = await Promise.all([
+      settle(a.sources.includes("reddit"), () => searchReddit(a.place)),
+      settle(a.sources.includes("youtube"), () => searchYouTube(a.place)),
+    ]);
+    return { place: a.place, reddit, youtube };
+  },
+};
+
+const calendar_read: ToolDef<"calendar_read"> = {
+  name: "calendar_read",
+  rail: "Google Calendar",
+  description: "List the traveller's upcoming calendar events.",
+  allowedAgents: ["travel"],
+  spend: none,
+  idempotencyKey: noKey,
+  execute: (a, { store }) => new GoogleCalendar(store).list(a.days),
+};
+
+const calendar_write: ToolDef<"calendar_write"> = {
+  name: "calendar_write",
+  rail: "Google Calendar",
+  description: "Add an event to the traveller's primary Google Calendar.",
+  allowedAgents: ["travel"],
+  spend: none,
+  idempotencyKey: noKey,
+  execute: (a, { store }) => new GoogleCalendar(store).add(a),
+};
+
+export const TOOLS = {
+  voice_speak, route_search, vendor_verify, payment_execute, booking_execute, financial_context, holdings_context,
+  discovery_search, calendar_read, calendar_write,
+} as const;
 
 export { schemas };
 export const newToolCallId = () => id("CALL");

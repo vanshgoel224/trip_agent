@@ -14,6 +14,13 @@ import { BiruniMcpServer } from "./mcp/server";
 import { mcpClientFor } from "./mcp/client";
 import { ModelRouter } from "./models";
 import { Orchestrator } from "./orchestrator";
+import { ChatAgent } from "./orchestrator/chat-agent";
+import { Chats } from "./orchestrator/chats";
+import { ExpenseAgent } from "./agents/expenses";
+import { MemoryGraph } from "./memory";
+import { Devices } from "./devices";
+import { McpConnections } from "./mcp-client";
+import { Conversation } from "./conversation";
 
 export type Biruni = ReturnType<typeof createBiruni>;
 
@@ -27,7 +34,7 @@ export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; pro
   const mcp = new BiruniMcpServer(store, providers, finance, compliance);
   finance.attach(mcpClientFor(mcp, "finance"));
 
-  const voice = new VoiceAgent(store, mcpClientFor(mcp, "voice"));
+  const voice = new VoiceAgent(store, mcpClientFor(mcp, "voice"), providers.voice);
   const travel = new TravelAgent(store, mcpClientFor(mcp, "travel"));
   const booking = new BookingAgent(store, mcpClientFor(mcp, "booking"));
   const undo = new UndoManager(store, opts.undoWindowMs ?? config.undoWindowMs);
@@ -41,10 +48,25 @@ export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; pro
   const orchestrator = new Orchestrator(store, { finance, recovery, travel, voice, undo, models });
   const rehydrated = undo.rehydrate();
 
+  // Conversational layer
+  const memory = new MemoryGraph(store);
+  const expenses = new ExpenseAgent(store);
+  const chats = new Chats(store);
+  const devices = new Devices(store);
+  devices.bind({
+    escalate: (tripId, description) => orchestrator.reportDisruption(tripId, description),
+    ask: (tripId, text) => voice.say(tripId, text, { kind: "CHECKIN" }),
+  });
+  const mcpClients = new McpConnections(store);
+  const chatAgent = new ChatAgent({ store, orchestrator, travel, booking, finance, expenses, memory, voice, chats, mcpClients, devices });
+  const conversation = new Conversation({ store, orchestrator, chats, chatAgent, memory, voice, models });
+
   return {
     store, providers, mcp, finance, compliance, voice, travel, booking, recovery, undo, models, orchestrator, rehydrated,
+    memory, expenses, chats, devices, mcpClients, chatAgent, conversation,
     shutdown() {
       undo.stopAll();
+      devices.stopAll();
       store.close();
     },
   };

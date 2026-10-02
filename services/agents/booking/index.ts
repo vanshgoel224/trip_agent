@@ -1,8 +1,8 @@
 // Booking / execution specialist — recovery booking, cancellation, verification,
 // itinerary versioning (spec §4.7).
-import type { BookingRecord, Itinerary, Route, TripState } from "../../../packages/domain";
+import type { Activity, BookingRecord, Itinerary, Route, TripState } from "../../../packages/domain";
 import type { Store } from "../../../packages/db";
-import { nowIso } from "../../../packages/shared";
+import { id, nowIso } from "../../../packages/shared";
 import { bus } from "../../../packages/events";
 import type { AgentMcp } from "../../mcp/client";
 
@@ -44,5 +44,32 @@ export class BookingAgent {
     this.store.put("trips", tripId, { ...trip, itinerary, currentRoute: undefined, updatedAt: nowIso() }, { tripId });
     this.store.put("itineraries", `${tripId}-v${itinerary.version}`, itinerary, { tripId });
     return itinerary;
+  }
+
+  // ---------- traveller activities (non-transport plans) ----------
+
+  addActivity(tripId: string, a: Omit<Activity, "activityId">): Activity {
+    const trip = this.store.get<TripState>("trips", tripId)!;
+    const act: Activity = { activityId: id("ACT"), ...a };
+    const activities = [...(trip.activities ?? []), act].sort((x, y) => `${x.date}${x.time ?? ""}`.localeCompare(`${y.date}${y.time ?? ""}`));
+    this.store.put("trips", tripId, { ...trip, activities, updatedAt: nowIso() }, { tripId });
+    bus.emitEvent({ tripId, agent: "booking", type: "ACTIVITY", detail: `Added ${a.date}${a.time ? " " + a.time : ""} ${a.title}` });
+    return act;
+  }
+
+  updateActivity(tripId: string, activityId: string, patch: Partial<Activity>) {
+    const trip = this.store.get<TripState>("trips", tripId)!;
+    const activities = (trip.activities ?? []).map((x) => (x.activityId === activityId ? { ...x, ...patch, activityId } : x));
+    this.store.put("trips", tripId, { ...trip, activities, updatedAt: nowIso() }, { tripId });
+    return activities.find((x) => x.activityId === activityId);
+  }
+
+  removeActivity(tripId: string, activityId: string) {
+    const trip = this.store.get<TripState>("trips", tripId)!;
+    const before = trip.activities ?? [];
+    const activities = before.filter((x) => x.activityId !== activityId);
+    this.store.put("trips", tripId, { ...trip, activities, updatedAt: nowIso() }, { tripId });
+    if (activities.length < before.length) bus.emitEvent({ tripId, agent: "booking", type: "ACTIVITY", detail: `Removed activity ${activityId}` });
+    return before.length - activities.length;
   }
 }

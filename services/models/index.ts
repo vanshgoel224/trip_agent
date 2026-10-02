@@ -140,6 +140,53 @@ export function rulesProposal(text: string): Proposal {
   return { intent, source: "RULES" };
 }
 
+// ---------- Tool-calling chat (the conversational agent) ----------
+
+export type ChatMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content?: string | null;
+  tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string }; [k: string]: unknown }[];
+  tool_call_id?: string;
+  [k: string]: unknown; // provider extras (e.g. Gemini thought signatures) are echoed back untouched
+};
+export type ToolSpec = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
+
+/** Resolves the endpoint for this connectivity state (online: Nemotron/Gemini, offline: Qwen). */
+export async function resolveEndpoint(online: boolean): Promise<Endpoint | undefined> {
+  const ep = online ? onlineEndpoint() : offlineEndpoint();
+  if (ep && isGeminiAuto(ep)) return { ...ep, model: (await resolveGeminiModel(ep.apiKey!)).model };
+  return ep;
+}
+
+export async function chatWithTools(ep: Endpoint, messages: ChatMessage[], tools: ToolSpec[], timeoutMs: number): Promise<ChatMessage> {
+  const once = async (ms: number) => {
+    const res = await fetch(`${ep.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      signal: AbortSignal.timeout(ms),
+      headers: { "content-type": "application/json", ...(ep.apiKey ? { authorization: `Bearer ${ep.apiKey}` } : {}) },
+      body: JSON.stringify({ model: ep.model, temperature: 0.2, max_tokens: 1024, messages, tools, tool_choice: "auto" }),
+    });
+    if (!res.ok) throw new Error(`model HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const j = (await res.json()) as { choices?: { message?: ChatMessage }[] };
+    const msg = j.choices?.[0]?.message;
+    if (!msg) throw new Error("model returned no message");
+    return msg;
+  };
+  const start = Date.now();
+  try {
+    return await once(timeoutMs);
+  } catch (e) {
+    const left = timeoutMs - (Date.now() - start);
+    if (!/HTTP (429|503)/.test(String(e))) throw e;
+    // Honour the provider's suggested delay (Gemini sends retryDelay "Ns") when it fits.
+    const hinted = Number(String(e).match(/retryDelay"?:\s*"?(\d+(?:\.\d+)?)s/)?.[1] ?? 0.7) * 1000;
+    const wait = Math.min(Math.max(hinted, 700), 12_000);
+    if (left < wait + 2000) throw e;
+    await new Promise((r) => setTimeout(r, wait));
+    return once(left - wait);
+  }
+}
+
 export class ModelRouter {
   lastError?: string;
 

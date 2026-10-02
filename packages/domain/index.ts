@@ -103,6 +103,18 @@ export type Traveller = {
   groupRole?: "LEADER" | "MEMBER";
 };
 
+/** Traveller-planned activity (sightseeing, meals, meetings). Not a booked transport leg. */
+export type Activity = {
+  activityId: string;
+  date: string; // YYYY-MM-DD
+  time?: string; // HH:MM
+  title: string;
+  location?: string;
+  cost?: number;
+  notes?: string;
+  calendarEventId?: string;
+};
+
 export type TripState = {
   tripId: string;
   travellerId: string;
@@ -112,6 +124,7 @@ export type TripState = {
   currentLocation?: Location;
   currentRoute?: Route;
   lastActions: ActionRecord[];
+  activities?: Activity[];
   createdAt: string;
   updatedAt: string;
 };

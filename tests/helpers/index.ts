@@ -2,6 +2,7 @@
 delete process.env.ONLINE_MODEL_API_KEY;
 delete process.env.GEMINI_API_KEY;
 process.env.OFFLINE_MODEL_CONFIG = "off";
+process.env.PROVIDER_MODE = "mock";
 
 import { createBiruni, type Biruni } from "../../services/runtime";
 import { seedScenario, type ScenarioName } from "../../services/integrations/scenarios";

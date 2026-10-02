@@ -76,6 +76,17 @@ export const schemas = {
   ]),
   financial_context: z.object({ ...tripRef, months: z.number().int().min(1).max(12).default(6) }),
   holdings_context: z.object({ ...tripRef }),
+
+  // ---- Supporting tools (outside the spec's seven rail tools) ----
+  discovery_search: z.object({ ...tripRef, place: z.string().min(2).max(80), sources: z.array(z.enum(["reddit", "youtube"])).default(["reddit", "youtube"]) }),
+  calendar_read: z.object({ ...tripRef, days: z.number().int().min(1).max(60).default(14) }),
+  calendar_write: z.object({
+    ...tripRef,
+    title: z.string().min(1).max(200),
+    start: z.string().min(10),
+    end: z.string().optional(),
+    location: z.string().max(200).optional(),
+  }),
 };
 
 export type ToolName = keyof typeof schemas;

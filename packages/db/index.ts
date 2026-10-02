@@ -23,6 +23,14 @@ export const TABLES = [
   "undo_actions",
   "consents",
   "offline_cache",
+  // Added for the conversational layer (not in spec §17):
+  "chats",
+  "chat_messages",
+  "expenses",
+  "memory_nodes",
+  "memory_links",
+  "mcp_servers",
+  "device_readings",
 ] as const;
 
 export type Table = (typeof TABLES)[number];

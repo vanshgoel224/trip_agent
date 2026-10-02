@@ -27,19 +27,37 @@ const KNOWN: Record<string, [number, number]> = {
 
 export class MockRoutingProvider implements RoutingProvider {
   async geocode(place: string) {
+    if (!place.trim()) throw new BiruniError("INVALID_REQUEST", "empty place");
     const k = KNOWN[place.toLowerCase()];
-    if (!k) throw new BiruniError("INVALID_REQUEST", `unknown place ${place} in simulator`);
-    return { name: place, lat: k[0], lng: k[1] };
+    return { name: place, lat: k?.[0] ?? 0, lng: k?.[1] ?? 0 }; // unknown places: simulated, no coordinates
   }
   async alternatives(tripId: string, from: string, to: string) {
-    return simulator
-      .trip(tripId)
-      .routes.filter((r) => r.from.toLowerCase() === from.toLowerCase() && r.to.toLowerCase() === to.toLowerCase())
-      .map((r) => ({ ...r, source: "LIVE" as const }));
+    const sim = simulator.trip(tripId);
+    const fixed = sim.routes.filter((r) => r.from.toLowerCase() === from.toLowerCase() && r.to.toLowerCase() === to.toLowerCase());
+    const routes = fixed.length || !sim.synthetic ? fixed : syntheticRoutes(from, to, sim.referenceFare || 1500);
+    return routes.map((r) => ({ ...r, source: "LIVE" as const }));
   }
   async vendorProfile(vendorId: string) {
     return simulator.vendors.get(vendorId);
   }
+}
+
+/** SIMULATED alternatives for any city pair, priced off the original fare. Not real inventory. */
+function syntheticRoutes(from: string, to: string, fare: number): Omit<Route, "source">[] {
+  const at = (h: number) => {
+    const d = new Date(Date.now() + 5.5 * 3600_000 + h * 3600_000);
+    return `${d.toISOString().slice(0, 13)}:00:00+05:30`;
+  };
+  const slug = `${from}-${to}`.toUpperCase().replace(/[^A-Z]+/g, "");
+  const r = (n: string, name: string, vendorId: string, rung: Route["vendorRung"], mult: number, mode: Route["mode"], h: number) => ({
+    routeId: `RT-${slug}-${n}`, from, to, mode, departure: at(h), vendorId, vendorName: `${name} (simulated)`, vendorRung: rung, price: Math.round((fare * mult) / 10) * 10,
+  });
+  return [
+    r("PL", "Express Sleeper Coach", "VND-PL-NUEGO", "PINE_LABS_MERCHANT", 0.8, "BUS", 2),
+    r("UPI", "City Travels", "VND-UPI-SAIRAM", "UPI_OPERATOR", 0.9, "BUS", 3),
+    r("LOC", "Local Tempo Service", "VND-LOCAL-RAJU", "LOCAL_TRANSPORT", 1.1, "OTHER", 2),
+    r("CASH", "Private bus (cash)", "VND-CASH-AUTO", "LOGGED_CASH", 0.6, "BUS", 4),
+  ];
 }
 
 export class MockBookingProvider implements BookingProvider {

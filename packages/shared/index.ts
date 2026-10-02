@@ -27,7 +27,8 @@ export const config = {
   dbPath: process.env.BIRUNI_DB_PATH ?? "biruni.db",
   incidentAuthority: 2000, // spec §8 — cumulative per disruption, not per transaction
   undoWindowMs: Number(process.env.UNDO_WINDOW_MS ?? 30_000), // spec §11
-  providerMode: (process.env.PROVIDER_MODE ?? "mock") as "mock" | "live",
+  // "auto" (default): each rail is live when its key is set, simulated otherwise.
+  providerMode: (process.env.PROVIDER_MODE ?? "auto") as "auto" | "mock" | "live",
   criticalBatteryPct: Number(process.env.CRITICAL_BATTERY_PCT ?? 5),
   minAge: 18,
   // Per-agent service tokens used by the MCP auth middleware. In production

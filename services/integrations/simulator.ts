@@ -16,6 +16,8 @@ export type VendorDirectoryEntry = {
 export type TripSimulation = {
   routes: Omit<Route, "source">[];
   referenceFare: number;
+  /** Generate simulated alternatives for any city pair not in `routes`. */
+  synthetic?: boolean;
   faults: {
     /** Payment provider accepts the charge, then the response times out. */
     paymentTimeoutAfterCharge?: boolean;

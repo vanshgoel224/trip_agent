@@ -49,6 +49,46 @@ function simFor(name: ScenarioName): TripSimulation {
   }
 }
 
+export type CustomTripInput = {
+  name?: string;
+  origin: string;
+  destination: string;
+  departure: string; // ISO or "YYYY-MM-DDTHH:MM" (IST assumed)
+  mode?: "BUS" | "TRAIN" | "FLIGHT" | "CAB";
+  fare?: number;
+  operator?: string;
+  dailyCeiling?: number;
+};
+
+/** A trip on the traveller's own route. Finance data and alternatives are SIMULATED. */
+export async function createCustomTrip(b: Biruni, input: CustomTripInput) {
+  const consentId = `AA-CONSENT-CUSTOM-${Date.now()}`;
+  simulator.accounts.set(consentId, { balance: 48_000, debits: sixMonthsOfDebits({ rent: 15_000, emi: 6_500 }) });
+  seedHoldings(consentId);
+  const dep = /[+Z]/.test(input.departure.slice(10)) ? input.departure : `${input.departure.slice(0, 16)}:00+05:30`;
+  const fare = Math.max(0, Math.round(input.fare ?? 1500));
+  const trip = b.orchestrator.createTrip({
+    traveller: {
+      name: input.name?.trim() || "Traveller",
+      age: 22,
+      preferredLanguage: "en-IN",
+      dailyCeiling: input.dailyCeiling ?? 3000,
+      emergencyContact: { name: "Emergency contact", phone: "+91-90000-00001" },
+      emergencyAutoAlertOptIn: false,
+      aaConsentId: consentId,
+    },
+    itinerary: {
+      origin: input.origin.trim(),
+      destination: input.destination.trim(),
+      legs: [{ legId: "LEG-1", from: input.origin.trim(), to: input.destination.trim(), mode: input.mode ?? "BUS", departure: dep, vendor: input.operator || "Your operator", cost: fare, status: "CONFIRMED" }],
+    },
+    currentLocation: { name: input.origin.trim() },
+  });
+  simulator.configureTrip(trip.tripId, { routes: [], referenceFare: fare || 1500, synthetic: true, faults: {} });
+  await b.orchestrator.prepareTrip(trip.tripId);
+  return { tripId: trip.tripId };
+}
+
 export async function seedScenario(b: Biruni, name: ScenarioName) {
   const consentId = `AA-CONSENT-${name}-${Date.now()}`;
   // Scenario C: free balance ₹1,200 after rent + EMI; recovery costs ₹1,400.

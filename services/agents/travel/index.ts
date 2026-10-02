@@ -35,4 +35,23 @@ export class TravelAgent {
     bus.emitEvent({ tripId, agent: "travel", type: "PREFETCHED", detail: `Offline cache: ${routes.length} routes, itinerary, emergency info` });
     return { routes: routes.length };
   }
+
+  /** Reddit + YouTube discovery. Returned text is third-party and untrusted. */
+  async discover(tripId: string, place: string, sources: ("reddit" | "youtube")[] = ["reddit", "youtube"]) {
+    const r = await this.mcp.call("discovery_search", { tripId, place, sources });
+    if (!r.success) throw new Error(r.error?.message ?? "discovery failed");
+    return r.data as any;
+  }
+
+  async calendarList(tripId: string, days = 14) {
+    const r = await this.mcp.call("calendar_read", { tripId, days });
+    if (!r.success) throw new Error(r.error?.message ?? "calendar read failed");
+    return r.data as any[];
+  }
+
+  async calendarAdd(tripId: string, e: { title: string; start: string; end?: string; location?: string }) {
+    const r = await this.mcp.call("calendar_write", { tripId, ...e });
+    if (!r.success) throw new Error(r.error?.message ?? "calendar write failed");
+    return r.data as { id?: string };
+  }
 }

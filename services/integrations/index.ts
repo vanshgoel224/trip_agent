@@ -14,23 +14,27 @@ export type Providers = {
   holdings: HoldingsProvider;
 };
 
+/**
+ * Per-rail selection. A rail goes live when its credentials are present
+ * (or when PROVIDER_MODE=live forces every rail live). PROVIDER_MODE=mock
+ * forces the simulator everywhere, e.g. for tests and the scripted demo.
+ */
 export function createProviders(mode = config.providerMode): Providers {
-  if (mode === "live") {
-    return {
-      voice: new GnaniProvider(),
-      payments: new PineLabsProvider(),
-      routing: new DelhiveryProvider(),
-      booking: new MockBookingProvider(), // no booking rail named in the design artifact
-      financial: new SetuProvider(),
-      holdings: new ZerodhaProvider(),
-    };
-  }
+  const live = (envKey: string) => mode === "live" || (mode !== "mock" && !!process.env[envKey]);
   return {
-    voice: new MockGnaniProvider(),
-    payments: new MockPaymentProvider(),
-    routing: new MockRoutingProvider(),
-    booking: new MockBookingProvider(),
-    financial: new MockSetuProvider(),
-    holdings: new MockZerodhaProvider(),
+    voice: live("GNANI_API_KEY") ? new GnaniProvider() : new MockGnaniProvider(),
+    payments: live("PINELABS_API_KEY") ? new PineLabsProvider() : new MockPaymentProvider(),
+    routing: live("DELHIVERY_API_KEY") ? new DelhiveryProvider() : new MockRoutingProvider(),
+    booking: new MockBookingProvider(), // no booking rail is named in the design artifact
+    financial: live("SETU_API_KEY") ? new SetuProvider() : new MockSetuProvider(),
+    holdings: live("ZERODHA_API_KEY") ? new ZerodhaProvider() : new MockZerodhaProvider(),
+  };
+}
+
+export function providerStatus(p: Providers) {
+  const name = (o: object) => o.constructor.name;
+  return {
+    gnani: name(p.voice), pineLabs: name(p.payments), delhivery: name(p.routing),
+    setuAA: name(p.financial), zerodha: name(p.holdings), booking: name(p.booking),
   };
 }
