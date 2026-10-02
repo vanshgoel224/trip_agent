@@ -2,7 +2,7 @@
 // unlock a space: username, KDF salt/params, the wrapped data key (DEK), the public
 // identity key and the wrapped private key. Each user's data lives in its own
 // database file, encrypted with their DEK. No lockout after wrong PINs (product
-// decision); Argon2id (64 MiB, 3 passes) makes each guess slow and memory-hard.
+// decision); Argon2id (46 MiB, 1 pass, OWASP setting) makes each guess slow and memory-hard.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, existsSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";

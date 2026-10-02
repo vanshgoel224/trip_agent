@@ -13,7 +13,8 @@
     "test:e2e": "node --no-warnings=ExperimentalWarning --import tsx --test \"tests/e2e/*.test.ts\"",
     "check": "node scripts/check.mjs",
     "agent:check": "node scripts/agent-check.mjs",
-    "agent:check:hard": "node scripts/agent-check-hard.mjs"
+    "agent:check:hard": "node scripts/agent-check-hard.mjs",
+    "load:test": "node scripts/load-test.mjs"
   },
   "repository": {
     "type": "git",

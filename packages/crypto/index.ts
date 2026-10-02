@@ -10,15 +10,43 @@
 //   to another row without failing authentication.
 import { createCipheriv, createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, type KeyObject } from "node:crypto";
 import { argon2id } from "hash-wasm";
+import { availableParallelism } from "node:os";
+import { Worker } from "node:worker_threads";
 
-export const KDF_DEFAULT = { alg: "argon2id" as const, m: Number(process.env.ARGON2_MEMORY_KIB ?? 65536), t: Number(process.env.ARGON2_ITERATIONS ?? 3), p: 1 };
+// OWASP Password Storage Cheat Sheet option: m = 46 MiB, t = 1, p = 1 (fast sign-in, memory-hard).
+export const KDF_DEFAULT = { alg: "argon2id" as const, m: Number(process.env.ARGON2_MEMORY_KIB ?? 47104), t: Number(process.env.ARGON2_ITERATIONS ?? 1), p: 1 };
 export type KdfParams = { alg: "argon2id"; salt: string; m: number; t: number; p: number };
 export type Box = { iv: string; ct: string }; // AES-GCM, ct includes the 16-byte tag
 export type Sealed = { e: string; iv: string; ct: string }; // e = ephemeral public key (spki, base64)
 
+// Argon2id runs in worker threads so many people signing in at once don't freeze the
+// server (each hash is ~0.3 s of CPU and 46 MiB). One short-lived worker per hash, at most
+// MAX_KDF_WORKERS at a time; extra sign-ins queue (bounded memory, nothing left running).
+const MAX_WORKERS = Math.max(1, Math.min(4, Number(process.env.MAX_KDF_WORKERS ?? (availableParallelism?.() ?? 2) - 1)));
+let running = 0;
+const queue: (() => void)[] = [];
+const slot = () => (running < MAX_WORKERS ? (running++, Promise.resolve()) : new Promise<void>((r) => queue.push(() => (running++, r()))));
+const release = () => (running--, queue.shift()?.());
+
 export async function deriveKek(pin: string, kdf: KdfParams): Promise<Buffer> {
-  const out = await argon2id({ password: pin.normalize("NFKC"), salt: Buffer.from(kdf.salt, "base64"), iterations: kdf.t, parallelism: kdf.p, memorySize: kdf.m, hashLength: 32, outputType: "binary" });
-  return Buffer.from(out);
+  const opts = { password: pin.normalize("NFKC"), salt: kdf.salt, iterations: kdf.t, parallelism: kdf.p, memorySize: kdf.m };
+  if (process.env.KDF_INLINE === "1") {
+    const out = await argon2id({ ...opts, salt: Buffer.from(kdf.salt, "base64"), hashLength: 32, outputType: "binary" });
+    return Buffer.from(out);
+  }
+  await slot();
+  try {
+    return await new Promise<Buffer>((resolve, reject) => {
+      // Plain JS worker, no inherited flags (under "node --test" it would start a test runner).
+      const w = new Worker(new URL("./kdf-worker.mjs", import.meta.url), { execArgv: [] });
+      w.once("message", (m: { key?: string; error?: string }) => (m.error ? reject(new Error(m.error)) : resolve(Buffer.from(m.key!, "base64"))));
+      w.once("error", reject);
+      w.once("exit", (code) => code !== 0 && reject(new Error(`kdf worker exited ${code}`)));
+      w.postMessage({ id: 0, ...opts });
+    }).finally(() => {});
+  } finally {
+    release();
+  }
 }
 export const newKdf = (): KdfParams => ({ ...KDF_DEFAULT, salt: randomBytes(16).toString("base64") });
 

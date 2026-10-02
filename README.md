@@ -157,7 +157,7 @@ npm run models:check
 
 The key handling follows the patterns Signal and similar apps use:
 - **Your own encrypted space.** Each account has a random 256-bit **data key (DEK)**. Your data lives in its own database file, AES-256-GCM encrypted with that key.
-- **The DEK is wrapped by your PIN.** The wrapping key comes from your PIN through **Argon2id** (64 MiB, 3 passes), so each guess is slow and memory-hard. Changing your PIN only re-wraps the DEK; nothing is re-encrypted.
+- **The DEK is wrapped by your PIN.** The wrapping key comes from your PIN through **Argon2id** (46 MiB, 1 pass: the OWASP-recommended setting, run in worker threads so sign-ins never freeze the server), so each guess is slow and memory-hard. Changing your PIN only re-wraps the DEK; nothing is re-encrypted.
 - **Records are bound to their place.** Every record is tied to its `table:id` with AES-GCM AAD, so ciphertext can't be swapped between rows.
 - **Identity keys.** Each user has an X25519 key pair; the private key is encrypted with their DEK.
 - **Shared trips:**

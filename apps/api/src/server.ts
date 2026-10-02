@@ -266,6 +266,10 @@ process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e 
 process.on("uncaughtException", (e) => console.error("[uncaughtException]", e.stack ?? e));
 server.on("clientError", (_e, socket) => socket.writable && socket.end("HTTP/1.1 400 Bad Request\r\n\r\n"));
 server.requestTimeout = 120_000;
+// Keep idle connections longer than clients/proxies do, so a reused socket isn't closed
+// under a request in flight ("fetch failed" / ECONNRESET under load).
+server.keepAliveTimeout = 65_000;
+server.headersTimeout = 66_000;
 
 await spaces.firstRunFromEnv();
 server.listen(config.port, () => {

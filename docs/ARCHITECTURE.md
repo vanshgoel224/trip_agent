@@ -79,7 +79,7 @@ flowchart TB
 
 | Layer | Mechanism |
 |---|---|
-| PIN → key | Argon2id (64 MiB, t=3) → KEK, which wraps a random 256-bit **DEK** (envelope; PIN change = re-wrap) |
+| PIN → key | Argon2id (46 MiB, t=1, OWASP; worker threads, at most 3 at once) → KEK, which wraps a random 256-bit **DEK** (envelope; PIN change = re-wrap) |
 | Records | AES-256-GCM, AAD = `table:id` (rows can't be swapped) |
 | Identity | X25519 per user; private key wrapped by the DEK |
 | Shared trips | random trip key **sealed per member** (ephemeral X25519 + HKDF + AES-GCM); rotated on removal; leader-only cancellations |
