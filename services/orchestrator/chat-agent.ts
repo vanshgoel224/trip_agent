@@ -9,7 +9,7 @@ import type { Store } from "../../packages/db";
 import { classifyDisruption } from "../../packages/policy";
 import { inr, nowIso } from "../../packages/shared";
 import { bus } from "../../packages/events";
-import { chat as chatOnceText, GENERIC_SYSTEM, chatWithTools, extractJson, resolveEndpoint, rulesProposal, type ChatMessage, type ToolSpec } from "../models";
+import { chat as chatOnceText, GENERIC_SYSTEM, chatWithTools, endpointChain, extractJson, rulesProposal, type ChatMessage, type ToolSpec } from "../models";
 import type { BookingAgent } from "../agents/booking";
 import type { TravelAgent } from "../agents/travel";
 import type { FinanceAgent } from "../agents/finance";
@@ -25,6 +25,7 @@ import type { Devices } from "../devices";
 import { resolveLanguage } from "../conversation";
 import type { Delhivery } from "../integrations/delhivery";
 import type { Feedback } from "../feedback";
+import type { Negotiator } from "../negotiator";
 import { getRuntime } from "./authority";
 import type { Orchestrator } from "./index";
 
@@ -33,7 +34,7 @@ const MAX_STEPS = Number(process.env.AGENT_MAX_STEPS ?? 12); // multi-step tasks
 export const READ_ONLY_TOOLS = new Set([
   "get_trip_status", "recall_memory", "get_budget", "list_expenses", "get_balances", "search_alternative_routes",
   "where_am_i", "find_place", "nearby_places", "directions", "discover_places", "calendar_list_events",
-  "delivery_quote", "delivery_track", "delivery_list",
+  "delivery_quote", "delivery_track", "delivery_list", "deal_status",
 ]);
 const APPROVAL_WORDS = /\b(yes|yeah|yep|haan|ha|han|ji|approve|approved|go ahead|book it|do it|ok|okay|theek|thik|kar do|karo|confirm|sure)\b/i;
 const NEGATION_WORDS = /\b(not yet|don'?t|do not|dont|wait|hold on|hold off|no|nope|nahi|nahin|mat|abhi nahi|ruko|later|cancel that)\b/i;
@@ -107,6 +108,17 @@ export const CHAT_TOOLS: ToolSpec[] = [
   fn("delivery_cancel", "Cancel a Delhivery booking before pickup.", { id: str("Booking id or AWB") }, ["id"]),
   fn("delivery_list", "List the traveller's Delhivery bookings."),
 
+  // ---- negotiator ----
+  fn("start_deal", "Start negotiating with a hotel owner, taxi or auto driver on the traveller's behalf. Needs a target and a MAXIMUM price given by the traveller.", {
+    kind: { type: "string", enum: ["hotel", "taxi", "auto", "other"] }, counterparty_name: str(""), counterparty_phone: str("Optional, for WhatsApp"),
+    language: str("Their language, e.g. Tamil, Kannada, Hindi"), goal: str("e.g. 'double room 5–7 Oct, 2 guests' or 'Baga to Panjim bus stand now'"),
+    details: { type: "object", additionalProperties: { type: "string" }, description: "checkin, checkout, guests, pickup, drop, place, time" },
+    target_price: { type: "number" }, max_price: { type: "number" }, channel: { type: "string", enum: ["relay", "whatsapp", "sms", "call"] },
+  }, ["kind", "language", "goal", "target_price", "max_price"]),
+  fn("deal_reply", "Give Biruni what the other person said (in any language); returns Biruni's next line and the deal status.", { dealId: str(""), their_reply: str("Their exact words") }, ["dealId", "their_reply"]),
+  fn("deal_status", "Status and transcript of the traveller's deals.", { dealId: str("Optional") }),
+  fn("deal_cancel", "Stop a negotiation.", { dealId: str("") }, ["dealId"]),
+
   // ---- feedback ----
   fn("record_feedback", "Save the traveller's feedback or rating (about a vendor/bus, a recovery, the trip, or Biruni itself). Call when they rate or complain/praise.", {
     kind: { type: "string", enum: ["vendor", "recovery", "trip", "feature", "general"] }, rating: { type: "number", description: "1-5 if given" }, comment: str("Their words, short"), about: str("What it's about, e.g. vendor name"),
@@ -122,7 +134,7 @@ export const CHAT_TOOLS: ToolSpec[] = [
 
 type Deps = {
   store: Store; orchestrator: Orchestrator; travel: TravelAgent; booking: BookingAgent; finance: FinanceAgent;
-  expenses: ExpenseAgent; memory: MemoryGraph; voice: VoiceAgent; chats: Chats; mcpClients: McpConnections; devices: Devices; delhivery: Delhivery; feedback: Feedback;
+  expenses: ExpenseAgent; memory: MemoryGraph; voice: VoiceAgent; chats: Chats; mcpClients: McpConnections; devices: Devices; delhivery: Delhivery; feedback: Feedback; negotiator: Negotiator;
 };
 
 export class ChatAgent {
@@ -164,14 +176,10 @@ How to think (critical thinking — do this silently, show only the conclusion):
   async respond(chat: Chat, text: string, hint?: string, opts: { ephemeral?: boolean } = {}): Promise<{ reply: string; source: string; tools: string[] } | undefined> {
     const tripId = chat.tripId;
     const online = tripId ? getRuntime(this.d.store, tripId).online : true;
-    let ep;
-    try {
-      ep = await resolveEndpoint(online);
-    } catch (e) {
-      bus.emitEvent({ tripId: tripId ?? "*", agent: "orchestrator", type: "MODEL", detail: `Model unavailable (${(e as Error).message}); using rules` });
-      return undefined;
-    }
-    if (!ep) return undefined;
+    const chain = await endpointChain(online);
+    if (!chain.length) return undefined;
+    let tier = 0;
+    let ep = chain[0];
 
     const o = this.d.orchestrator;
     const used: string[] = [];
@@ -209,7 +217,18 @@ How to think (critical thinking — do this silently, show only the conclusion):
 
     try {
       for (let step = 0; step < MAX_STEPS; step++) {
-        const msg = await chatWithTools(ep, messages, tools, Number(process.env.MODEL_TIMEOUT_MS ?? 20000));
+        let msg: ChatMessage;
+        for (;;) {
+          try {
+            msg = await chatWithTools(ep, messages, tools, Number(process.env.MODEL_TIMEOUT_MS ?? 20000));
+            break;
+          } catch (e) {
+            // Fallback chain: next model (e.g. Gemini quota hit → local Qwen) continues the same turn.
+            if (++tier >= chain.length) throw e;
+            bus.emitEvent({ tripId: tripId ?? "*", agent: "orchestrator", type: "MODEL", detail: `${ep.model} failed (${String((e as Error).message).slice(0, 80)}); falling back to ${chain[tier].model}` });
+            ep = chain[tier];
+          }
+        }
         messages.push(msg);
         if (!msg.tool_calls?.length) {
           let reply = (msg.content ?? "").trim() || "Done.";
@@ -222,9 +241,10 @@ How to think (critical thinking — do this silently, show only the conclusion):
               if (v.issues.length) bus.emitEvent({ tripId: tripId ?? "*", agent: "orchestrator", type: "CRITIC", detail: `Self-check: ${v.ok ? "OK" : "fixed"} ${v.issues.join("; ").slice(0, 200)}` });
             }
           }
-          return { reply, source: `${online ? "ONLINE" : "OFFLINE"}_MODEL:${ep.model}${checked}`, tools: used };
+          return { reply, source: `${ep.tier === "local" ? "OFFLINE" : "ONLINE"}_MODEL:${ep.model}${tier ? " (fallback)" : ""}${checked}`, tools: used };
         }
-        for (const call of msg.tool_calls) {
+        // Read-only calls in the same turn run in parallel; anything that writes runs in order.
+        const calls = msg.tool_calls.map((call) => {
           let args: Record<string, any> = {};
           try {
             args = JSON.parse(call.function.arguments || "{}");
@@ -233,15 +253,21 @@ How to think (critical thinking — do this silently, show only the conclusion):
           }
           used.push(call.function.name);
           bus.emitEvent({ tripId: tripId ?? "*", agent: "orchestrator", type: "TOOL", detail: `[${chat.mode}] ${call.function.name}(${JSON.stringify(args).slice(0, 120)})` });
-          let result: unknown;
+          return { call, args };
+        });
+        const runOne = async ({ call, args }: (typeof calls)[number]) => {
           try {
             if (!allowed.has(call.function.name)) throw new Error(`${call.function.name} is not available in this chat`);
-            result = await this.exec(chat, call.function.name, args, text);
+            return await this.exec(chat, call.function.name, args, text);
           } catch (e) {
-            result = { error: e instanceof Error ? e.message : String(e) };
+            return { error: e instanceof Error ? e.message : String(e) };
           }
-          messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result).slice(0, 6000) });
-        }
+        };
+        const results: unknown[] = new Array(calls.length);
+        const parallel = calls.every((c) => READ_ONLY_TOOLS.has(c.call.function.name) || c.call.function.name.startsWith("ext__"));
+        if (parallel) (await Promise.all(calls.map(runOne))).forEach((r, i) => (results[i] = r));
+        else for (let i = 0; i < calls.length; i++) results[i] = await runOne(calls[i]);
+        calls.forEach(({ call }, i) => messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(results[i]).slice(0, 6000) }));
       }
       return { reply: "I've done what I could; tell me what you'd like next.", source: `MODEL:${ep.model}`, tools: used };
     } catch (e) {
@@ -255,8 +281,9 @@ How to think (critical thinking — do this silently, show only the conclusion):
 
   private needsCheck(used: string[], reply: string) {
     if ((process.env.CRITIC ?? "auto") === "off") return false;
-    const stakes = ["report_disruption", "approve_pending", "undo_last_action", "add_expense", "get_balances", "settle_up", "get_budget", "delivery_quote", "delivery_book", "directions", "nearby_places", "search_alternative_routes", "get_trip_status"];
-    return used.some((t) => stakes.includes(t)) || (used.length > 0 && /₹|\d/.test(reply));
+    // Only money/booking replies pay for the extra verifier call; everything else skips it (latency).
+    const stakes = ["report_disruption", "approve_pending", "undo_last_action", "add_expense", "get_balances", "settle_up", "get_budget", "delivery_quote", "delivery_book", "start_deal", "deal_reply", "search_alternative_routes"];
+    return used.some((t) => stakes.includes(t)) && /₹|\d/.test(reply);
   }
 
   /** Second model call: is every claim in the draft backed by the tool results? Returns a fix if not. */
@@ -354,6 +381,22 @@ Return ONLY JSON: {"ok": true|false, "issues": ["..."], "revised": "<corrected f
         this.d.devices.setRoute(chat.tripId, { from: origin, to: dest, ...r });
         return { from: origin.name ?? "your location", to: dest.name, distanceKm: +(r.distanceM / 1000).toFixed(1), minutes: Math.round(r.durationS / 60), steps: r.steps.slice(0, 25), note: "Route is drawn on the map in the app." };
       }
+      case "start_deal": {
+        const lang = resolveLanguage(a.language) ?? "hi-IN";
+        const traveller = chat.tripId ? this.d.orchestrator.snapshot(chat.tripId).traveller?.name : undefined;
+        const r = await this.d.negotiator.start({ tripId: chat.tripId, kind: a.kind, counterpartyName: String(a.counterparty_name ?? ""), counterpartyPhone: a.counterparty_phone, language: lang, goal: String(a.goal), details: a.details, travellerName: traveller ?? "the traveller", target: Number(a.target_price), max: Number(a.max_price), channel: a.channel });
+        return { dealId: r.deal.dealId, say_this: r.line.text, pronunciation: r.line.roman, meaning: r.line.translation, offer: r.line.price, delivery: r.line.sent, note: "Show/speak 'say_this' to them, then give me their reply." };
+      }
+      case "deal_reply": {
+        const r = await this.d.negotiator.counterpartySaid(String(a.dealId), String(a.their_reply));
+        return { status: r.deal.status, agreedPrice: r.deal.agreedPrice, theyAsked: r.deal.theirLast, say_this: r.line?.text, pronunciation: r.line?.roman, meaning: r.line?.translation, recordedIn: r.recorded, limits: { target: r.deal.target, max: r.deal.max }, rounds: r.deal.rounds };
+      }
+      case "deal_status": {
+        const ds = a.dealId ? [this.d.negotiator.get(String(a.dealId))].filter(Boolean) : this.d.negotiator.list(chat.tripId).slice(0, 5);
+        return { deals: ds.map((d: any) => ({ dealId: d.dealId, kind: d.kind, with: d.counterparty.name, status: d.status, agreedPrice: d.agreedPrice, lastLines: d.transcript.slice(-4).map((t: any) => `${t.from}: ${t.translation ?? t.text}`) })) };
+      }
+      case "deal_cancel":
+        return { status: this.d.negotiator.cancel(String(a.dealId)).status };
       case "record_feedback": {
         const inc = chat.tripId ? this.d.orchestrator.currentIncident(chat.tripId) : undefined;
         const vendorId = a.kind === "vendor" ? inc?.chosenOption?.vendorId : undefined;

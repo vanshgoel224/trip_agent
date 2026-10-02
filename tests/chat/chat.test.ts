@@ -13,6 +13,8 @@ const lastToolReq = () => seen.filter((r) => r.tools).at(-1);
 const fake: Server = createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c)).on("end", () => {
+    if (req.method === "GET") return void (res.writeHead(200, { "content-type": "application/json" }), res.end('{"data":[]}')); // /models health check
+    if (req.url?.includes("/fail/")) return void (res.writeHead(500), res.end("boom"));
     const j = JSON.parse(body);
     seen.push(j);
     const step = script.shift() ?? { text: "ok" };
@@ -342,6 +344,30 @@ test("consent guard: a hedged 'book it? not yet' never books", async () => {
     await b.conversation.send(chat.chatId, t);
   }
   assert.equal(payments.chargeCalls, 0);
+  noModel();
+  b.shutdown();
+});
+
+test("fallback chain: online model fails mid-turn → local Qwen finishes it; nothing reachable → rules", async () => {
+  await withModel();
+  const port = (fake.address() as any).port;
+  process.env.ONLINE_MODEL_BASE_URL = `http://127.0.0.1:${port}/fail/v1`;
+  process.env.OFFLINE_MODEL_CONFIG = JSON.stringify({ baseUrl: `http://127.0.0.1:${port}/v1`, model: "qwen3:4b" });
+  const { b, tripId } = await setup("A");
+  const chat = b.conversation.newChat("general", tripId);
+  script = [{ text: "Answered by local Qwen." }];
+  const r = await b.conversation.send(chat.chatId, "hello");
+  assert.equal(r.message.text, "Answered by local Qwen.");
+  assert.match(r.source, /OFFLINE_MODEL:qwen3:4b \(fallback\)/);
+  // MODEL_PRIMARY=local: local first even when online.
+  process.env.MODEL_PRIMARY = "local";
+  script = [{ text: "Local first." }];
+  assert.match((await b.conversation.send(chat.chatId, "hi again")).source, /OFFLINE_MODEL:qwen3:4b$/);
+  delete process.env.MODEL_PRIMARY;
+  process.env.OFFLINE_MODEL_CONFIG = "off";
+  process.env.ONLINE_MODEL_BASE_URL = `http://127.0.0.1:${port}/fail/v1`;
+  const r3 = await b.conversation.send(chat.chatId, "status");
+  assert.equal(r3.source, "RULES", "every model down → deterministic rules still answer");
   noModel();
   b.shutdown();
 });

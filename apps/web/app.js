@@ -63,6 +63,7 @@ async function openChat(chatId) {
   box.innerHTML = "";
   if (!messages.length) box.append(heroFor(chat.mode));
   for (const m of messages) addMsg(m.role, m.text, m);
+  if (chat.mode === "negotiate") for (const d of (await api("GET", `/api/deals${chat.tripId ? `?tripId=${chat.tripId}` : ""}`).catch(() => [])).slice(0, 3).reverse()) renderDeal(d.dealId);
   document.querySelectorAll(".chat-item").forEach((el) => el.classList.toggle("active", el.dataset.chat === chatId));
 }
 
@@ -77,6 +78,8 @@ function heroFor(mode) {
     calendar: ["What's on my calendar this week?", "Add check-out at 11am on Friday"],
     budget: ["How much can Biruni spend for me?", "What's protected in my account?"],
     custom: ["What can you do in this chat?"],
+    negotiate: ["Book a room at Sea Breeze homestay, 5–7 Oct, target ₹1,500/night, max ₹2,000, owner speaks Tamil", "Get an auto from Baga to Panjim bus stand, target ₹350, max ₹450, Konkani", "Status of my deals"],
+    delivery: ["Send my 10 kg suitcase from Pune to Goa", "Track my parcel"],
   }[mode] ?? [];
   const d = document.createElement("div");
   d.className = "hero";
@@ -104,7 +107,7 @@ function addMsg(role, text, m = {}) {
   const tools = (m.tools ?? []).map((t) => `<span class="tool-chip">${esc(t)}</span>`).join("");
   const filed = (m.copiedTo ?? []).map((c) => `<button class="filed" data-chat="${c.chatId}">↪ filed in ${esc(modeInfo(c.mode).icon)} ${esc(modeInfo(c.mode).label)}</button>`).join("");
   const from = m.copiedFrom ? `<span class="copied-tag">↪ from General</span>` : "";
-  const meta = role === "assistant" ? `<div class="meta">${from}${tools}${m.source ? `<span>${esc(String(m.source).replace("ONLINE_MODEL:", "").replace("OFFLINE_MODEL:", "offline · "))}</span>` : ""}<button class="play" data-play="${esc(text)}">🔊</button>${m.messageId && m.messageId !== "EPHEMERAL" ? `<button class="fb" data-fb="1" data-mid="${m.messageId}" title="Good answer">👍</button><button class="fb" data-fb="-1" data-mid="${m.messageId}" title="Bad answer">👎</button>` : ""}${filed}</div>` : from ? `<div class="meta">${from}</div>` : "";
+  const meta = role === "assistant" ? `<div class="meta">${from}${tools}${m.source ? `<span>${esc(String(m.source).replace("ONLINE_MODEL:", "").replace("OFFLINE_MODEL:", "offline · "))}${m.ms ? ` · ${(m.ms / 1000).toFixed(1)}s` : ""}</span>` : ""}<button class="play" data-play="${esc(text)}">🔊</button>${m.messageId && m.messageId !== "EPHEMERAL" ? `<button class="fb" data-fb="1" data-mid="${m.messageId}" title="Good answer">👍</button><button class="fb" data-fb="-1" data-mid="${m.messageId}" title="Bad answer">👎</button>` : ""}${filed}</div>` : from ? `<div class="meta">${from}</div>` : "";
   d.innerHTML = `<div class="bubble">${fmt(text)}</div>${meta}`;
   box.append(d);
   box.scrollTop = box.scrollHeight;
@@ -293,6 +296,51 @@ async function loadLanguages() {
   if ("speechSynthesis" in window) speechSynthesis.addEventListener?.("voiceschanged", fillVoice);
 }
 
+// ---------------- negotiator deal card ----------------
+const DEAL_LANG = (d) => d.counterparty.language;
+async function renderDeal(dealId) {
+  const chat = S.chats.find((c) => c.chatId === S.chatId);
+  if (!chat || !["negotiate", "general"].includes(chat.mode)) return;
+  const d = await api("GET", `/api/deals/${dealId}`).catch(() => null);
+  if (!d) return;
+  const last = [...d.transcript].reverse().find((t) => t.from === "biruni");
+  let card = document.querySelector(`.deal[data-deal="${dealId}"]`);
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "deal";
+    card.dataset.deal = dealId;
+    $("messages").querySelector(".hero")?.remove();
+    $("messages").append(card);
+  }
+  const open = ["NEGOTIATING", "AGREED"].includes(d.status);
+  card.innerHTML = `<div class="row between"><b>🤝 ${esc(d.kind)} · ${esc(d.counterparty.name)}</b><span class="badge ${d.status}">${d.status}${d.agreedPrice ? ` · ${inr(d.agreedPrice)}` : ""}</span></div>
+    <div class="muted small">${esc(d.goal)} · target ${inr(d.target)} · max ${inr(d.max)} · ${esc(langLabel(DEAL_LANG(d)))} · ${esc(d.channel)}</div>
+    ${last ? `<div class="say">${esc(last.text)}</div>${last.roman ? `<div class="roman">${esc(last.roman)}</div>` : ""}<div class="meaning">“${esc(last.translation ?? "")}”</div>${last.sent && !last.sent.startsWith("relay") ? `<div class="muted small">${esc(last.sent)}</div>` : ""}` : ""}
+    ${open ? `<div class="row"><button class="pill accent" data-deal-speak="${dealId}">🔊 Say it to them</button><button class="pill" data-deal-listen="${dealId}">🎤 Their reply</button></div>
+    <form class="reply" data-deal-form="${dealId}"><input placeholder="…or type what they said (any language)" /><button class="pill">Send</button></form>` : ""}
+    ${d.recorded?.length ? `<div class="small" style="color:var(--ok)">✓ Recorded in ${esc(d.recorded.join(", "))}</div>` : ""}
+    <details><summary>Transcript (${d.transcript.length})</summary>${d.transcript.map((t) => `<div>${t.from === "biruni" ? "Biruni" : esc(d.counterparty.name)}: ${esc(t.text)}${t.translation && t.translation !== t.text ? ` <i>(${esc(t.translation)})</i>` : ""}</div>`).join("")}</details>`;
+  $("messages").scrollTop = $("messages").scrollHeight;
+  card._deal = d;
+}
+async function dealReply(dealId, text) {
+  if (!text.trim()) return;
+  await api("POST", `/api/deals/${dealId}/reply`, { text });
+  await renderDeal(dealId);
+  const d = document.querySelector(`.deal[data-deal="${dealId}"]`)?._deal;
+  const last = d && [...d.transcript].reverse().find((t) => t.from === "biruni");
+  if (last && $("speak").checked) speak(last.text, DEAL_LANG(d));
+  refreshTrip();
+}
+document.addEventListener("submit", (e) => {
+  const f = e.target.closest("[data-deal-form]");
+  if (!f) return;
+  e.preventDefault();
+  const v = f.querySelector("input").value;
+  f.querySelector("input").value = "";
+  dealReply(f.dataset.dealForm, v);
+});
+
 // ---------------- trips ----------------
 async function loadTrips() {
   const trips = await api("GET", "/api/trips");
@@ -419,6 +467,7 @@ function connectEvents() {
     while ($("activity").children.length > 200) $("activity").lastChild.remove();
     if (e.type === "IMPACT") refreshDevice();
     if (e.type === "PLAN") renderPlan(e.data);
+    if (e.type === "DEAL") renderDeal(e.data.dealId);
     if (e.type === "AUTOPILOT") refreshAutopilot();
     if (e.type === "VOICE" && e.data?.kind === "CHECKIN") $("checkin").classList.remove("hidden");
     if (["STEP", "TRIP_STATUS", "ITINERARY", "ACTIVITY", "LEDGER_COMMIT", "UNDO_EXPIRED", "UNDO_CANCELLED", "ROUTE", "LOCATION"].includes(e.type)) scheduleRefresh();
@@ -635,6 +684,25 @@ $("memExport").onclick = async () => {
 // ---------------- wiring ----------------
 document.addEventListener("click", async (e) => {
   if (e.target.closest("[data-custom]")) return openCustom();
+  const ds = e.target.closest("[data-deal-speak]");
+  if (ds) {
+    const d = document.querySelector(`.deal[data-deal="${ds.dataset.dealSpeak}"]`)?._deal;
+    const last = d && [...d.transcript].reverse().find((t) => t.from === "biruni");
+    if (last) speak(last.text, DEAL_LANG(d));
+    return;
+  }
+  const dl = e.target.closest("[data-deal-listen]");
+  if (dl) {
+    const d = document.querySelector(`.deal[data-deal="${dl.dataset.dealListen}"]`)?._deal;
+    try {
+      const r = await listen(DEAL_LANG(d), dl);
+      const text = r?.text ?? (r?.audioBase64 ? (await api("POST", "/api/voice/stt", { audioBase64: r.audioBase64, mime: r.mime, language: DEAL_LANG(d) })).text : "");
+      if (text) dealReply(d.dealId, text);
+    } catch (err) {
+      alert(`Mic: ${err.message}`);
+    }
+    return;
+  }
   const fbBtn = e.target.closest("[data-fb]");
   if (fbBtn) {
     const rating = Number(fbBtn.dataset.fb);

@@ -160,9 +160,53 @@ export type ToolSpec = { type: "function"; function: { name: string; description
 
 /** Resolves the endpoint for this connectivity state (online: Nemotron/Gemini, offline: Qwen). */
 export async function resolveEndpoint(online: boolean): Promise<Endpoint | undefined> {
-  const ep = online ? onlineEndpoint() : offlineEndpoint();
-  if (ep && isGeminiAuto(ep)) return { ...ep, model: (await resolveGeminiModel(ep.apiKey!)).model };
-  return ep;
+  return (await endpointChain(online))[0];
+}
+
+// Local model health: a quick ping (cached 30 s) so a stopped Ollama is skipped instantly.
+let localHealth: { ok: boolean; at: number; key: string } | undefined;
+export async function localReachable(ep = offlineEndpoint()): Promise<boolean> {
+  if (!ep) return false;
+  const key = `${ep.baseUrl}|${ep.model}`;
+  if (localHealth && localHealth.key === key && Date.now() - localHealth.at < 30_000) return localHealth.ok;
+  let ok = false;
+  try {
+    const res = await fetch(`${ep.baseUrl.replace(/\/$/, "")}/models`, { signal: AbortSignal.timeout(800) });
+    ok = res.ok;
+  } catch {
+    ok = false;
+  }
+  localHealth = { ok, at: Date.now(), key };
+  return ok;
+}
+
+/**
+ * Model fallback chain, best first:
+ *   online:  Nemotron (ONLINE_MODEL_API_KEY) or Gemini stand-in → local Qwen (if reachable)
+ *   offline: local Qwen
+ *   MODEL_PRIMARY=local puts local Qwen first even when online.
+ * If every model fails, callers fall back to deterministic rules.
+ */
+export async function endpointChain(online: boolean): Promise<(Endpoint & { tier: "online" | "local" })[]> {
+  const out: (Endpoint & { tier: "online" | "local" })[] = [];
+  const local = offlineEndpoint();
+  const localOk = local ? await localReachable(local) : false;
+  let remote: Endpoint | undefined;
+  if (online) {
+    remote = onlineEndpoint();
+    if (remote && isGeminiAuto(remote)) {
+      try {
+        remote = { ...remote, model: (await resolveGeminiModel(remote.apiKey!)).model };
+      } catch {
+        remote = undefined;
+      }
+    }
+  }
+  const preferLocal = (process.env.MODEL_PRIMARY ?? "online") === "local" || !online;
+  if (preferLocal && local && localOk) out.push({ ...local, tier: "local" });
+  if (remote) out.push({ ...remote, tier: "online" });
+  if (!preferLocal && local && localOk) out.push({ ...local, tier: "local" });
+  return out;
 }
 
 export async function chatWithTools(ep: Endpoint, messages: ChatMessage[], tools: ToolSpec[], timeoutMs: number): Promise<ChatMessage> {

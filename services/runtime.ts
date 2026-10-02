@@ -24,6 +24,9 @@ import { Conversation } from "./conversation";
 import { Delhivery } from "./integrations/delhivery";
 import { Autopilot } from "./autopilot";
 import { Feedback } from "./feedback";
+import { Negotiator } from "./negotiator";
+import { GoogleCalendar } from "./integrations/google-calendar";
+import { inr } from "../packages/shared";
 
 export type Biruni = ReturnType<typeof createBiruni>;
 
@@ -63,13 +66,39 @@ export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; pro
   const mcpClients = new McpConnections(store);
   const delhivery = new Delhivery(store);
   const feedback = new Feedback(store);
-  const chatAgent = new ChatAgent({ store, orchestrator, travel, booking, finance, expenses, memory, voice, chats, mcpClients, devices, delhivery, feedback });
+  const negotiator = new Negotiator(store);
+  const chatAgent = new ChatAgent({ store, orchestrator, travel, booking, finance, expenses, memory, voice, chats, mcpClients, devices, delhivery, feedback, negotiator });
+  // A confirmed deal is recorded where the traveller will look for it.
+  negotiator.onConfirmed(async (d) => {
+    const done: string[] = [];
+    const ist = new Date(Date.now() + 5.5 * 3600_000).toISOString();
+    const date = (d.details.checkin ?? d.details.date ?? ist).slice(0, 10);
+    const time = d.kind === "hotel" ? d.details.time ?? "14:00" : d.details.time ?? ist.slice(11, 16);
+    const title = d.kind === "hotel" ? `Stay: ${d.counterparty.name} — ${d.goal}` : `${d.kind === "auto" ? "Auto" : "Taxi"} with ${d.counterparty.name} — ${d.goal}`;
+    if (d.tripId) {
+      booking.addActivity(d.tripId, { date, time, title, location: d.details.place ?? d.details.drop, cost: d.agreedPrice, notes: `Agreed ${inr(d.agreedPrice!)} by negotiation (${d.channel}); pay directly. Deal ${d.dealId}` });
+      done.push("trip plans");
+    }
+    if (d.kind === "hotel") {
+      memory.remember({ subject: "Me", subject_type: "traveller", relation: "booked stay at", object: d.counterparty.name, object_type: "place" }, d.dealId, "EXTRACTED");
+      done.push("memory");
+    }
+    if (new GoogleCalendar(store).status().canWrite) {
+      try {
+        await new GoogleCalendar(store).add({ title, start: `${date}T${time}:00+05:30`, location: d.details.place, description: `Agreed ${inr(d.agreedPrice!)} via Biruni negotiator` });
+        done.push("calendar");
+      } catch {
+        /* calendar optional */
+      }
+    }
+    return done;
+  });
   const autopilot = new Autopilot({ store, orchestrator, voice, devices });
   const conversation = new Conversation({ store, orchestrator, chats, chatAgent, memory, voice, models });
 
   return {
     store, providers, mcp, finance, compliance, voice, travel, booking, recovery, undo, models, orchestrator, rehydrated,
-    memory, expenses, chats, devices, mcpClients, chatAgent, conversation, delhivery, autopilot, feedback,
+    memory, expenses, chats, devices, mcpClients, chatAgent, conversation, delhivery, autopilot, feedback, negotiator,
     shutdown() {
       autopilot.stop();
       undo.stopAll();

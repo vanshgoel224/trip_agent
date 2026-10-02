@@ -7,7 +7,7 @@ import type { ChatAgent } from "./orchestrator/chat-agent";
 import type { Chats, ChatMode, CustomSpec } from "./orchestrator/chats";
 import type { MemoryGraph } from "./memory";
 import type { VoiceAgent } from "./agents/voice";
-import { chat as modelChat, GENERIC_SYSTEM, geminiStrongModel, resolveEndpoint, type ModelRouter } from "./models";
+import { chat as modelChat, GENERIC_SYSTEM, endpointChain, geminiStrongModel, type ModelRouter } from "./models";
 import { bestMatch, containsFuzzy, editDistance, normalize, rank } from "../packages/shared/fuzzy";
 
 // Languages for translation. Gnani (voice) covers the first ten; the rest use
@@ -74,6 +74,7 @@ const TOOL_HOME: Record<string, ChatMode> = {
   discover_places: "discover",
   calendar_list_events: "calendar", calendar_add_event: "calendar", add_activity: "calendar", update_activity: "calendar", remove_activity: "calendar",
   get_budget: "budget",
+  start_deal: "negotiate", deal_reply: "negotiate", deal_cancel: "negotiate",
   delivery_quote: "delivery", delivery_book: "delivery", delivery_track: "delivery", delivery_cancel: "delivery", delivery_list: "delivery",
 };
 const TRANSLATE_RE = /\b(translate|translation|anuvad|in (hindi|tamil|telugu|kannada|malayalam|marathi|gujarati|punjabi|bengali|odia|urdu|assamese|konkani|english))\b|\b(kaise bolte|ko .* mein kya kehte)\b/i;
@@ -114,6 +115,7 @@ export class Conversation {
   }
 
   async send(chatId: string, text: string, hints: { targetLanguage?: string; sourceLanguage?: string } = {}) {
+    const started = Date.now();
     const chat = this.d.chats.get(chatId);
     if (!chat) throw new Error("unknown chat");
     const clean = text.trim().slice(0, 4000);
@@ -158,7 +160,7 @@ export class Conversation {
         out = { reply: "My language model isn't connected (set GEMINI_API_KEY or ONLINE_MODEL_API_KEY). Without it I can only handle trip disruptions.", source: "RULES", tools: [] };
       }
     }
-    const msg = this.d.chats.add(chatId, { role: "assistant", text: out.reply, source: out.source, tools: out.tools });
+    const msg = this.d.chats.add(chatId, { role: "assistant", text: out.reply, source: out.source, tools: out.tools, ms: Date.now() - started });
 
     // Auto-file General messages into the matching function chat (created if needed).
     const copiedTo: { chatId: string; mode: ChatMode; title: string }[] = [];
@@ -175,8 +177,9 @@ export class Conversation {
 
   /** Text translation between any two languages via the LLM, with a script sanity check. */
   async translate(text: string, from: string, to: string): Promise<{ translation: string; pronunciation?: string; source: string; warning?: string }> {
-    const ep = await resolveEndpoint(true).catch(() => undefined);
-    if (!ep) throw new Error("Translation needs a language model: set GEMINI_API_KEY or ONLINE_MODEL_API_KEY");
+    const chain = await endpointChain(true).catch(() => []);
+    if (!chain.length) throw new Error("Translation needs a language model: set GEMINI_API_KEY / ONLINE_MODEL_API_KEY, or run local Qwen (Ollama)");
+    let ep = chain[0];
     const prompt = `Translate from ${from === "auto" ? "the detected language" : langName(from)} to ${langName(to)}. Write the translation ONLY in ${langName(to)}'s own script. Return ONLY JSON: {"translation": "<in ${langName(to)} script>", "pronunciation": "<Latin-script reading>"}.\nText: ${text}`;
     const run = async (model: string) => {
       const raw = await modelChat({ ...ep, model }, prompt, 20_000, GENERIC_SYSTEM);
@@ -184,7 +187,14 @@ export class Conversation {
       const j = JSON.parse(body.slice(body.indexOf("{"), body.lastIndexOf("}") + 1));
       return { translation: String(j.translation ?? "").trim(), pronunciation: j.pronunciation as string | undefined, source: model };
     };
-    let out = await run(ep.model);
+    let out: Awaited<ReturnType<typeof run>>;
+    try {
+      out = await run(ep.model);
+    } catch (e) {
+      if (!chain[1]) throw e;
+      ep = chain[1]; // fallback model
+      out = await run(ep.model);
+    }
     if (scriptScore(out.translation, to) < 0.85) {
       const strong = geminiStrongModel();
       if (strong && strong !== ep.model) out = await run(strong).catch(() => out);

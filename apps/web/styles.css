@@ -212,3 +212,13 @@ dialog:has(.wide) { width: min(860px, calc(100vw - 24px)); }
 .plan-step.blocked { color: var(--bad); }
 .dec-ACT { color: var(--ok); }
 .dec-WAIT, .dec-ASK { color: var(--warn); }
+.deal { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 14px 16px; display: grid; gap: 8px; }
+.deal .say { font-size: 22px; line-height: 1.4; }
+.deal .roman { color: var(--muted); font-size: 13px; }
+.deal .meaning { font-size: 13px; }
+.deal .badge { font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+.deal .badge.CONFIRMED { color: var(--ok); border-color: var(--ok); }
+.deal .badge.WALKED_AWAY, .deal .badge.CANCELLED { color: var(--bad); border-color: var(--bad); }
+.deal .reply { display: flex; gap: 6px; }
+.deal .reply input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; color: var(--ink); font: inherit; }
+.deal details { font-size: 12px; color: var(--muted); }

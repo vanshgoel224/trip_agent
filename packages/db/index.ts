@@ -34,6 +34,7 @@ export const TABLES = [
   "parcels",
   "feedback",
   "autopilot",
+  "deals",
 ] as const;
 
 export type Table = (typeof TABLES)[number];
@@ -48,6 +49,13 @@ type Meta = { tripId?: string; incidentId?: string; key?: string };
 export class Store {
   private db: DatabaseSync;
   private financeCap: FinanceCapability | null = null;
+  // Prepared-statement cache: SQLite parses each distinct SQL once.
+  private stmts = new Map<string, ReturnType<DatabaseSync["prepare"]>>();
+  private stmt(sql: string) {
+    let st = this.stmts.get(sql);
+    if (!st) this.stmts.set(sql, (st = this.db.prepare(sql)));
+    return st;
+  }
 
   constructor(path = ":memory:") {
     this.db = new DatabaseSync(path);
@@ -80,8 +88,8 @@ export class Store {
       throw new Error(`write to ${table} rejected: only the finance agent may mutate it`);
     }
     const now = nowIso();
-    this.db
-      .prepare(
+    this
+      .stmt(
         `INSERT INTO ${table} (id, trip_id, incident_id, key, data, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET trip_id=excluded.trip_id, incident_id=excluded.incident_id,
@@ -92,7 +100,7 @@ export class Store {
   }
 
   get<T>(table: Table, id: string): T | undefined {
-    const row = this.db.prepare(`SELECT data FROM ${table} WHERE id = ?`).get(id) as { data: string } | undefined;
+    const row = this.stmt(`SELECT data FROM ${table} WHERE id = ?`).get(id) as { data: string } | undefined;
     return row ? (JSON.parse(row.data) as T) : undefined;
   }
 
@@ -103,7 +111,7 @@ export class Store {
     if (filter.incidentId) (where.push("incident_id = ?"), args.push(filter.incidentId));
     if (filter.key) (where.push("key = ?"), args.push(filter.key));
     const sql = `SELECT data FROM ${table}${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at, rowid`;
-    return (this.db.prepare(sql).all(...args) as { data: string }[]).map((r) => JSON.parse(r.data) as T);
+    return (this.stmt(sql).all(...args) as { data: string }[]).map((r) => JSON.parse(r.data) as T);
   }
 
   findByKey<T>(table: Table, key: string): T | undefined {
@@ -112,7 +120,7 @@ export class Store {
 
   delete(table: Table, id: string) {
     if (FINANCE_ONLY.includes(table)) throw new Error(`delete on ${table} not allowed`);
-    this.db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
+    this.stmt(`DELETE FROM ${table} WHERE id = ?`).run(id);
   }
 
   /** Synchronous atomic section. */
@@ -129,6 +137,7 @@ export class Store {
   }
 
   close() {
+    this.stmts.clear();
     this.db.close();
   }
 }
