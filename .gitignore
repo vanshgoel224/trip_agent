@@ -1,6 +1,10 @@
 # ---- Node ----
 node_modules/
 *.tsbuildinfo
+dist/
+coverage/
+*.log
+npm-debug.log*
 biruni.db
 biruni.db-*
 
