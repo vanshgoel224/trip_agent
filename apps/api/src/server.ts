@@ -25,9 +25,10 @@ import autopilot from "./routes/autopilot";
 import deals from "./routes/deals";
 import feedback from "./routes/feedback";
 import social from "./routes/social";
+import fallRoutes, { falls } from "./routes/falls";
 
 const router = new Router();
-for (const register of [trips, chat, device, travel, models, connections, autopilot, deals, feedback, social]) register(router.route);
+for (const register of [trips, chat, device, travel, models, connections, autopilot, deals, feedback, social, fallRoutes]) register(router.route);
 
 const WEB_ROOT = fileURLToPath(new URL("../../web/", import.meta.url));
 const isSecure = (req: IncomingMessage) => req.headers["x-forwarded-proto"] === "https" || (req.socket as { encrypted?: boolean }).encrypted === true || process.env.BIRUNI_SECURE === "1";
@@ -229,6 +230,6 @@ server.listen(config.port, () => {
   console.log(`Biruni on http://localhost:${config.port}  (providers: ${config.providerMode}) — ${spaces.legacyPending ? "existing data found: sign in with your current PIN to keep it" : n ? `${n} account(s); sign in to unlock` : "first run: open the app to create an account"}`);
 });
 
-const shutdown = () => server.close(() => (spaces.shutdown(), process.exit(0)));
+const shutdown = () => server.close(() => (falls.stopAll(), spaces.shutdown(), process.exit(0)));
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

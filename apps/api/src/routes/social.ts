@@ -5,7 +5,7 @@ import { bus } from "../../../../packages/events";
 import { BiruniError } from "../../../../packages/shared";
 import { withActor } from "../../../../packages/shared/context";
 import type { RouteFn } from "../http";
-import { me, rt, spaces } from "../spaces";
+import { me, rt, spaces, type Space } from "../spaces";
 
 const contacts = () => rt().store.get<{ list: string[] }>("settings", "contacts")?.list ?? [];
 
@@ -15,6 +15,30 @@ export const EMERGENCY = [
   { number: "108", label: "Ambulance (most states)" },
   { number: "1363", label: "Tourist helpline (verify for your state)" },
 ];
+
+/** Raise an SOS as this space's user: sealed alerts, live pings to recipients, SMS to the trip's emergency contact. */
+export async function sendSos(space: Space, input: { message: string; location?: { lat: number; lng: number; accuracy?: number; at?: string }; everyone?: boolean; tripId?: string }) {
+  const b = space.b;
+  const tripId = input.tripId;
+  const trip = tripId ? b.store.get<TripState>("trips", tripId) : undefined;
+  const last = b.devices.latest(tripId) ?? b.devices.latest();
+  const location = input.location && Number.isFinite(Number(input.location.lat)) ? input.location : last ? { lat: last.lat, lng: last.lng, accuracy: last.accuracy, at: last.at } : undefined;
+  const contactsList = b.store.get<{ list: string[] }>("settings", "contacts")?.list ?? [];
+  const r = spaces.social.raiseSos(space.me, { message: input.message, location, tripTitle: trip ? `${trip.itinerary.origin} → ${trip.itinerary.destination}` : undefined }, { contacts: contactsList, everyone: !!input.everyone });
+  // Wake each recipient's live stream (they see who, not what, until they open it).
+  for (const name of r.sentTo) {
+    const a = spaces.accounts.byUsername(name);
+    if (a) withActor({ userId: a.userId, username: a.username }, () => bus.emitEvent({ tripId: "*", agent: "help", type: "SOS", detail: `🚨 ${space.me.username} needs help — open SOS` }));
+  }
+  // Emergency contact on the trip gets an SMS (simulated until Exotel keys are set).
+  let sms: string | undefined;
+  const traveller = trip ? b.store.get<Traveller>("users", trip.travellerId) : undefined;
+  if (traveller?.emergencyContact?.phone) {
+    const where = location ? ` Location: https://www.openstreetmap.org/?mlat=${location.lat}&mlon=${location.lng}#map=16/${location.lat}/${location.lng}` : "";
+    sms = await b.telephony.sendSms(traveller.emergencyContact.phone, `SOS from ${space.me.username} via Biruni: ${input.message.slice(0, 300) || "I need help"}.${where} If you can't reach them, call 112.`).catch((e) => `not sent: ${(e as Error).message}`);
+  }
+  return { ...r, emergencyContactSms: sms, location: location ? { lat: location.lat, lng: location.lng } : undefined, emergency: EMERGENCY, note: "Biruni alerts people you trust. It does not replace 112 — call 112 if you can." };
+}
 
 export default function register(route: RouteFn) {
   // ---------- profile ----------
@@ -95,27 +119,7 @@ export default function register(route: RouteFn) {
 
   // ---------- SOS ----------
   route("GET", "/api/sos", () => ({ inbox: spaces.social.inbox(me()), mine: spaces.social.mine(me()), emergency: EMERGENCY }));
-  route("POST", "/api/sos", async (_r, body) => {
-    const b = rt();
-    const tripId = body.tripId ? String(body.tripId) : undefined;
-    const trip = tripId ? b.store.get<TripState>("trips", tripId) : undefined;
-    const last = b.devices.latest(tripId) ?? b.devices.latest();
-    const location = body.location && Number.isFinite(Number(body.location.lat)) ? body.location : last ? { lat: last.lat, lng: last.lng, accuracy: last.accuracy, at: last.at } : undefined;
-    const r = spaces.social.raiseSos(me(), { message: String(body.message ?? ""), location, tripTitle: trip ? `${trip.itinerary.origin} → ${trip.itinerary.destination}` : undefined }, { contacts: contacts(), everyone: !!body.everyone });
-    // Wake each recipient's live stream (they see who, not what, until they open it).
-    for (const name of r.sentTo) {
-      const a = spaces.accounts.byUsername(name);
-      if (a) withActor({ userId: a.userId, username: a.username }, () => bus.emitEvent({ tripId: "*", agent: "help", type: "SOS", detail: `🚨 ${me().username} needs help — open SOS` }));
-    }
-    // Emergency contact on the trip gets an SMS (simulated until Exotel keys are set).
-    let sms: string | undefined;
-    const traveller = trip ? b.store.get<Traveller>("users", trip.travellerId) : undefined;
-    if (traveller?.emergencyContact?.phone) {
-      const where = location ? ` Location: https://www.openstreetmap.org/?mlat=${location.lat}&mlon=${location.lng}#map=16/${location.lat}/${location.lng}` : "";
-      sms = await b.telephony.sendSms(traveller.emergencyContact.phone, `SOS from ${me().username} via Biruni: ${String(body.message ?? "I need help").slice(0, 300)}.${where} If you can't reach them, call 112.`).catch((e) => `not sent: ${(e as Error).message}`);
-    }
-    return { ...r, emergencyContactSms: sms, location: location ? { lat: location.lat, lng: location.lng } : undefined, emergency: EMERGENCY, note: "Biruni alerts people you trust. It does not replace 112 — call 112 if you can." };
-  });
+  route("POST", "/api/sos", (_r, body) => sendSos(spaces.current(), { message: String(body.message ?? ""), location: body.location, everyone: !!body.everyone, tripId: body.tripId ? String(body.tripId) : undefined }));
   route("POST", "/api/sos/:id/respond", (_r, body, p) => {
     const out = spaces.social.respond(p.id, me(), body.kind, body.note);
     const sender = spaces.social.inbox(me()).find((x) => x.sosId === p.id)?.from;

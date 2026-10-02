@@ -6,6 +6,7 @@ import { initLegal } from "./modules/legal.js";
 import { initSos } from "./modules/sos.js";
 import { initPeople } from "./modules/people.js";
 import { initBattery, power } from "./modules/battery.js";
+import { initFall } from "./modules/fall.js";
 const $ = (id) => document.getElementById(id);
 const inr = (n) => "₹" + Number(n).toLocaleString("en-IN");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -678,22 +679,28 @@ function onMotion(ev) {
   if (impactAt && now - impactAt < 5000) {
     peak = Math.max(peak, g);
     if (Math.abs(g - 1) < 0.15) still += ev.interval || 16;
-    if (still >= 3000 && S.tripId) {
+    if (still >= 3000 && S.tripId && !document.getElementById("fallOverlay")?.offsetParent) {
       api("POST", "/api/device/impact", { tripId: S.tripId, peakG: peak, stillSeconds: Math.round(still / 1000) }).then(refreshDevice);
       impactAt = 0;
     }
   }
 }
 $("motion").onchange = async (e) => {
-  if (!e.target.checked) return void (window.removeEventListener("devicemotion", onMotion), (motionOn = false));
-  if (!S.tripId) { e.target.checked = false; return alert("Pick a trip first"); }
-  if (typeof DeviceMotionEvent === "undefined") { e.target.checked = false; return alert("No accelerometer on this device/browser"); }
-  if (typeof DeviceMotionEvent.requestPermission === "function") {
-    const r = await DeviceMotionEvent.requestPermission().catch(() => "denied"); // iOS
-    if (r !== "granted") { e.target.checked = false; return alert("Motion permission denied"); }
+  if (!e.target.checked) {
+    window.removeEventListener("devicemotion", onMotion);
+    motionOn = false;
+    features.fall?.stop();
+    return store.set("fallWatch", false);
   }
-  window.addEventListener("devicemotion", onMotion);
+  try {
+    await features.fall?.start(); // drop watch: works without a trip
+  } catch (err) {
+    e.target.checked = false;
+    return alert(err.message);
+  }
+  window.addEventListener("devicemotion", onMotion); // vehicle-crash check-in (needs a trip)
   motionOn = true;
+  store.set("fallWatch", true);
 };
 $("imOk").onclick = () => S.tripId && api("POST", "/api/device/ok", { tripId: S.tripId }).then(() => $("checkin").classList.add("hidden"));
 
@@ -1059,7 +1066,7 @@ let started = false;
 const features = {};
 function startFeatures() {
   const deps = { $, api, esc, S, store, secureLocal };
-  for (const [name, init] of [["legal", initLegal], ["sos", initSos], ["people", initPeople], ["battery", initBattery]]) {
+  for (const [name, init] of [["legal", initLegal], ["sos", initSos], ["people", initPeople], ["battery", initBattery], ["fall", initFall]]) {
     try {
       features[name] = init(deps) ?? {};
     } catch (e) {
@@ -1067,6 +1074,12 @@ function startFeatures() {
     }
   }
   features.legal?.ensureAccepted?.();
+  window.biruniFall = features.fall; // console: biruniFall.simulate() to try it on a laptop
+  // Re-arm drop watch on reload (Android allows motion without a prompt; iOS asks on the toggle).
+  if (store.get("fallWatch", false) && typeof DeviceMotionEvent?.requestPermission !== "function") {
+    $("motion").checked = true;
+    $("motion").dispatchEvent(new Event("change"));
+  }
 }
 
 async function startApp() {

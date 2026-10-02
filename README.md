@@ -187,6 +187,34 @@ Limits, bluntly:
 - **No server, no problem.** If the server can't be reached, the app offers a ready-made **SMS with your last known location**. That location is stored **encrypted on the phone** (PBKDF2-SHA256 600k + AES-GCM, key in memory only while signed in).
 - **112 and 108 are always one tap away. Biruni does not dispatch police or rescue.** 1363 is listed as the tourist helpline; verify it for your state.
 
+## Drop & crash watch
+
+Turn on **Drop & crash watch** in the sidebar.
+- **Detection:** the phone's motion sensors watch for **free fall followed by an impact**, the signature of a dropped phone.
+- **The moment is recorded:**
+  - free-fall time and estimated height (½·g·t²)
+  - impact force in g
+  - how far it tumbled (gyroscope)
+  - the phone's angle before and after landing
+  - location and battery
+  - severity: low, medium or high
+- **The countdown runs on the server** (60 s, `FALL_CANCEL_MS`). If the phone breaks or loses signal right after the fall, the SOS still goes out.
+- **Ways to cancel, even with a broken screen or button:**
+  - tap **I'm OK**
+  - **shake the phone 3 times**
+  - **say "I'm OK" / "theek hoon"**
+  - press any key
+  - tap I'm OK on **any other phone or laptop signed into your account**
+- **No cancel means a wide-range SOS:** trip members, trusted contacts **and everyone on the server who opted in to help**, plus an SMS to the trip's emergency contact. The alert includes the drop details and location.
+- **Offline:** the countdown runs on the phone, then tries the SOS, then offers a ready-made SMS.
+- **Also kept:** the vehicle-crash check-in (hard jolt + stillness, no free fall).
+- **Tested against:** a 1.3 m drop; waist-high and 2 m+ drops; walking; a hard tap on a table; a 2 cm slip; a soft catch; and bounces.
+
+Honest limits:
+- **The thresholds are tuned on synthetic sensor data, not real phones.** Expect to adjust `apps/web/modules/falldetect.js` after real drop tests.
+- **Volume and power buttons can't be read by a web app.** That's why there's the shake and voice cancel instead.
+- **Motion sensors only run while the app is open.** A web app can't detect drops with the screen off or the app closed; that needs a native background service.
+
 ## Power
 
 - **Real behaviour:** the app reads the battery where the browser allows. Below 20%, or with **Power saver** on, Biruni slows itself down (GPS every 60 s instead of 10 s).
