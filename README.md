@@ -88,6 +88,8 @@ All fares, balances and vendors are **simulated and fictional**. They aren't rea
 
 ```bash
 export ONLINE_MODEL_API_KEY=nvapi-...      # NVIDIA key; never commit it
+# or, as a temporary stand-in for Nemotron (not in the Biruni design):
+export GEMINI_API_KEY=...                  # optional GEMINI_MODEL=<id> to pin a model
 ollama pull qwen3:4b && ollama serve       # on the phone/laptop, for the offline model
 npm run models:check
 ```

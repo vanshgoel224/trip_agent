@@ -21,15 +21,41 @@ type Endpoint = { baseUrl: string; apiKey?: string; model: string };
 export const DEFAULT_ONLINE = { baseUrl: "https://integrate.api.nvidia.com/v1", model: "nvidia/nemotron-3-ultra-550b-a55b" };
 export const DEFAULT_OFFLINE = { baseUrl: "http://localhost:11434/v1", model: "qwen3:4b" };
 
+// Temporary stand-in for Nemotron: Gemini via Google's OpenAI-compatible endpoint
+// (https://ai.google.dev/gemini-api/docs/openai). Used only when GEMINI_API_KEY is
+// set and ONLINE_MODEL_API_KEY is not. GEMINI_MODEL pins a model; otherwise one
+// is picked from the key's own model list (see resolveGeminiModel).
+export const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+let geminiModel: string | undefined = process.env.GEMINI_MODEL || undefined;
+
 export function onlineEndpoint(): Endpoint | undefined {
   const apiKey = process.env.ONLINE_MODEL_API_KEY;
-  if (!apiKey) return undefined;
-  return {
-    baseUrl: process.env.ONLINE_MODEL_BASE_URL || DEFAULT_ONLINE.baseUrl,
-    model: process.env.ONLINE_MODEL_NAME || DEFAULT_ONLINE.model,
-    apiKey,
-  };
+  if (apiKey) {
+    return {
+      baseUrl: process.env.ONLINE_MODEL_BASE_URL || DEFAULT_ONLINE.baseUrl,
+      model: process.env.ONLINE_MODEL_NAME || DEFAULT_ONLINE.model,
+      apiKey,
+    };
+  }
+  const gemini = process.env.GEMINI_API_KEY;
+  if (gemini) return { baseUrl: GEMINI_BASE_URL, model: geminiModel ?? "(auto)", apiKey: gemini };
+  return undefined;
 }
+
+/** Lists the models this Gemini key can use and picks a fast text model. */
+export async function resolveGeminiModel(apiKey: string, timeoutMs = 10000): Promise<{ model: string; available: string[] }> {
+  const res = await fetch(`${GEMINI_BASE_URL}/models`, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) throw new Error(`Gemini model list HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const j = (await res.json()) as { data?: { id: string }[] };
+  const available = (j.data ?? []).map((m) => m.id.replace(/^models\//, ""));
+  const text = available.filter((m) => m.startsWith("gemini") && !/embed|image|tts|audio|live|vision|thinking/.test(m));
+  const pick = text.find((m) => /flash/.test(m) && !/lite|preview|exp/.test(m)) ?? text.find((m) => /flash/.test(m)) ?? text[0];
+  if (!pick) throw new Error("no usable Gemini text model for this key");
+  geminiModel = pick;
+  return { model: pick, available };
+}
+
+export const isGeminiAuto = (ep: Endpoint) => ep.baseUrl === GEMINI_BASE_URL && ep.model === "(auto)";
 
 export function offlineEndpoint(): Endpoint | undefined {
   // OFFLINE_MODEL_CONFIG is JSON: {"baseUrl":"http://localhost:11434/v1","model":"qwen3:4b"}
@@ -110,9 +136,10 @@ export class ModelRouter {
   }
 
   async propose(text: string, online: boolean): Promise<Proposal> {
-    const ep = online ? onlineEndpoint() : offlineEndpoint();
+    let ep = online ? onlineEndpoint() : offlineEndpoint();
     if (ep) {
       try {
+        if (isGeminiAuto(ep)) ep = { ...ep, model: (await resolveGeminiModel(ep.apiKey!)).model };
         const raw = await chat(ep, text, this.timeoutMs);
         const p = ProposalSchema.parse(extractJson(raw));
         this.lastError = undefined;
