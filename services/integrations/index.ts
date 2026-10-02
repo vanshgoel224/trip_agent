@@ -1,5 +1,5 @@
 import { config } from "../../packages/shared";
-import { DelhiveryProvider, MockBookingProvider, MockRoutingProvider, type BookingProvider, type RoutingProvider } from "./delhivery";
+import { DelhiveryOrnamental, MockBookingProvider, MockRoutingProvider, type BookingProvider, type RoutingProvider } from "./delhivery";
 import { GnaniProvider, MockGnaniProvider, type VoiceProvider } from "./gnani";
 import { MockPaymentProvider, PineLabsProvider, type PaymentProvider } from "./pine-labs";
 import { MockSetuProvider, SetuProvider, type FinancialDataProvider } from "./setu-aa";
@@ -12,6 +12,7 @@ export type Providers = {
   booking: BookingProvider;
   financial: FinancialDataProvider;
   holdings: HoldingsProvider;
+  delhivery: DelhiveryOrnamental;
 };
 
 /**
@@ -24,19 +25,19 @@ export function createProviders(mode = config.providerMode): Providers {
   return {
     voice: live("GNANI_API_KEY") ? new GnaniProvider() : new MockGnaniProvider(),
     payments: live("PINELABS_API_KEY") ? new PineLabsProvider() : new MockPaymentProvider(),
-    // Delhivery has no bus/train inventory API; alternatives stay simulated. Delhivery Maps
-    // (geocode/route) is connected as an MCP server when DELHIVERY_MAPS_TOKEN is set.
-    routing: mode === "live" ? new DelhiveryProvider() : new MockRoutingProvider(),
+    // Transport alternatives are simulated; maps/geocoding/routing use OpenStreetMap.
+    routing: new MockRoutingProvider(),
     booking: new MockBookingProvider(), // no booking rail is named in the design artifact
     financial: live("SETU_API_KEY") ? new SetuProvider() : new MockSetuProvider(),
     holdings: live("ZERODHA_API_KEY") ? new ZerodhaProvider() : new MockZerodhaProvider(),
+    delhivery: new DelhiveryOrnamental(), // ornamental for now
   };
 }
 
 export function providerStatus(p: Providers) {
   const name = (o: object) => o.constructor.name;
   return {
-    gnani: name(p.voice), pineLabs: name(p.payments), delhivery: name(p.routing),
+    gnani: name(p.voice), pineLabs: name(p.payments), transport: name(p.routing), delhivery: p.delhivery.status(),
     setuAA: name(p.financial), zerodha: name(p.holdings), booking: name(p.booking),
   };
 }

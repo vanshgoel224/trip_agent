@@ -3,7 +3,7 @@
 import type { Store } from "../../packages/db";
 import { id, nowIso } from "../../packages/shared";
 
-export type ChatMode = "general" | "recovery" | "translate" | "splitwise" | "discover" | "maps" | "calendar" | "budget";
+export type ChatMode = "general" | "recovery" | "translate" | "splitwise" | "discover" | "maps" | "calendar" | "budget" | "custom";
 
 const CORE = ["get_trip_status", "remember", "recall_memory", "speak"];
 const RECOVERY = ["report_disruption", "approve_pending", "decline_pending", "undo_last_action", "mark_verified_way_home", "search_alternative_routes"];
@@ -56,6 +56,12 @@ export const CHAT_MODES: Record<ChatMode, { label: string; icon: string; prompt:
     prompt: "Manage the traveller's plans and Google Calendar: read upcoming events, add trip plans, flag clashes with the itinerary.",
     tools: [...CORE, ...CAL, ...ACTIVITIES],
   },
+  custom: {
+    label: "Custom chat",
+    icon: "✎",
+    prompt: "Follow the traveller's own instructions for this chat.",
+    tools: [...CORE],
+  },
   budget: {
     label: "Budget & money",
     icon: "◈",
@@ -64,15 +70,40 @@ export const CHAT_MODES: Record<ChatMode, { label: string; icon: string; prompt:
   },
 };
 
-export type Chat = { chatId: string; mode: ChatMode; title: string; tripId?: string; createdAt: string; updatedAt: string };
-export type StoredMessage = { messageId: string; chatId: string; role: "user" | "assistant"; text: string; at: string; source?: string; tools?: string[] };
+/** Tool groups a custom chat can enable. */
+export const TOOL_GROUPS: Record<string, { label: string; tools: string[] }> = {
+  trip: { label: "Trip status & disruption recovery", tools: ["get_trip_status", ...RECOVERY] },
+  plans: { label: "Plans & activities", tools: ACTIVITIES },
+  expenses: { label: "Split expenses", tools: EXPENSES },
+  maps: { label: "Maps & live location", tools: MAPS },
+  calendar: { label: "Calendar", tools: CAL },
+  discover: { label: "Discover places (Reddit/YouTube)", tools: ["discover_places"] },
+  budget: { label: "Budget & obligations", tools: ["get_budget"] },
+  voice: { label: "Speak aloud", tools: ["speak"] },
+};
+
+export type CustomSpec = { instructions: string; groups: string[] };
+export type Chat = { chatId: string; mode: ChatMode; title: string; tripId?: string; custom?: CustomSpec; createdAt: string; updatedAt: string };
+
+/** Tools and prompt for a chat, including custom chats. */
+export function chatProfile(chat: Chat): { label: string; prompt: string; tools: string[] } {
+  const base = CHAT_MODES[chat.mode] ?? CHAT_MODES.general;
+  if (chat.mode !== "custom" || !chat.custom) return base;
+  const tools = new Set(["remember", "recall_memory", ...chat.custom.groups.flatMap((g) => TOOL_GROUPS[g]?.tools ?? [])]);
+  return { label: chat.title, prompt: `The traveller set up this chat with these instructions — follow them: """${chat.custom.instructions.slice(0, 2000)}"""`, tools: [...tools] };
+}
+export type StoredMessage = { messageId: string; chatId: string; role: "user" | "assistant"; text: string; at: string; source?: string; tools?: string[]; copiedFrom?: string };
 
 export class Chats {
   constructor(private store: Store) {}
 
-  create(mode: ChatMode, tripId?: string, title?: string): Chat {
+  create(mode: ChatMode, tripId?: string, title?: string, custom?: CustomSpec): Chat {
     if (!CHAT_MODES[mode]) throw new Error(`unknown chat mode ${mode}`);
-    const c: Chat = { chatId: id("CHAT"), mode, title: title?.trim() || CHAT_MODES[mode].label, tripId, createdAt: nowIso(), updatedAt: nowIso() };
+    if (mode === "custom") {
+      if (!custom?.instructions?.trim()) throw new Error("a custom chat needs instructions");
+      custom = { instructions: custom.instructions.trim().slice(0, 2000), groups: (custom.groups ?? []).filter((g) => g in TOOL_GROUPS) };
+    }
+    const c: Chat = { chatId: id("CHAT"), mode, title: title?.trim().slice(0, 60) || CHAT_MODES[mode].label, tripId, custom: mode === "custom" ? custom : undefined, createdAt: nowIso(), updatedAt: nowIso() };
     this.store.put("chats", c.chatId, c, { tripId, key: mode });
     return c;
   }
@@ -81,11 +112,17 @@ export class Chats {
     return this.store.get<Chat>("chats", chatId);
   }
 
+  /** Most recent chat of a mode for this trip (or with no trip). */
+  findLatest(mode: ChatMode, tripId?: string) {
+    return this.list().find((c) => c.mode === mode && (c.tripId ?? "") === (tripId ?? ""));
+  }
+
   list(): Chat[] {
     return this.store.list<Chat>("chats").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   update(chatId: string, patch: Partial<Pick<Chat, "title" | "tripId">>) {
+    if (patch.title !== undefined) patch.title = patch.title.trim().slice(0, 60) || undefined;
     const c = this.get(chatId);
     if (!c) throw new Error("unknown chat");
     const next = { ...c, ...patch, updatedAt: nowIso() };
@@ -103,7 +140,7 @@ export class Chats {
     this.store.put("chat_messages", msg.messageId, msg, { key: chatId });
     const c = this.get(chatId);
     if (c) {
-      const title = c.title === CHAT_MODES[c.mode].label && m.role === "user" ? m.text.slice(0, 48) : c.title;
+      const title = c.mode !== "custom" && !m.copiedFrom && c.title === CHAT_MODES[c.mode].label && m.role === "user" ? m.text.slice(0, 48) : c.title;
       this.store.put("chats", chatId, { ...c, title, updatedAt: nowIso() }, { tripId: c.tripId, key: c.mode });
     }
     return msg;

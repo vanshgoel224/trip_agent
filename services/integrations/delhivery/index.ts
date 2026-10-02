@@ -3,7 +3,6 @@
 // design artifact does not name a rail for them.
 import type { Route } from "../../../packages/domain";
 import { BiruniError, id } from "../../../packages/shared";
-import { notImplemented, requireEnv } from "../live-stub";
 import { simulator, type VendorDirectoryEntry } from "../simulator";
 
 export interface RoutingProvider {
@@ -78,17 +77,28 @@ export class MockBookingProvider implements BookingProvider {
   }
 }
 
-export class DelhiveryProvider implements RoutingProvider {
-  constructor() {
-    requireEnv("DELHIVERY_API_KEY", "DELHIVERY_API_URL");
+/**
+ * Delhivery — ORNAMENTAL for now (product decision). It shows as active and accepts
+ * calls, but without a key it returns empty results. Maps, geocoding and routing
+ * use OpenStreetMap (services/integrations/openstreetmap); transport alternatives
+ * use the simulator. When a key arrives, implement these against Delhivery's
+ * docs (https://www.delhivery.com/maps/developer) behind the same methods.
+ */
+export class DelhiveryOrnamental {
+  readonly name = "Delhivery";
+  get keyed() {
+    return !!process.env.DELHIVERY_API_KEY;
   }
-  geocode(): Promise<never> {
-    return notImplemented("delhivery", "geocode");
+  status() {
+    return { active: true, keyed: this.keyed, note: this.keyed ? "Key present, adapter not implemented yet: still returns empty" : "Active, no key: returns empty results" };
   }
-  alternatives(): Promise<never> {
-    return notImplemented("delhivery", "alternatives");
+  async geocode(_q: string) {
+    return { provider: "delhivery", results: [] as unknown[] };
   }
-  vendorProfile(): Promise<never> {
-    return notImplemented("delhivery", "vendorProfile");
+  async route(_from: unknown, _to: unknown) {
+    return { provider: "delhivery", routes: [] as unknown[] };
+  }
+  async pickup(_req: unknown) {
+    return { provider: "delhivery", pickupId: null };
   }
 }

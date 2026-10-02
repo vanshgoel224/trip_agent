@@ -19,8 +19,9 @@ const modeInfo = (m) => S.modes.find((x) => x.mode === m) ?? { label: m, icon: "
 
 async function loadModes() {
   S.modes = await api("GET", "/api/chat-modes");
-  $("modeMenu").innerHTML = S.modes.map((m) => `<button data-mode="${m.mode}"><span>${m.icon}</span> ${esc(m.label)}</button>`).join("");
-  $("modeChips").innerHTML = S.modes.map((m) => `<button class="chip" data-mode="${m.mode}">${m.icon} ${esc(m.label)}</button>`).join("");
+  const builtin = S.modes.filter((m) => m.mode !== "custom");
+  $("modeMenu").innerHTML = builtin.map((m) => `<button data-mode="${m.mode}"><span>${m.icon}</span> ${esc(m.label)}</button>`).join("") + `<button class="custom" data-custom="1"><span>✎</span> Custom chat…</button>`;
+  $("modeChips").innerHTML = builtin.map((m) => `<button class="chip" data-mode="${m.mode}">${m.icon} ${esc(m.label)}</button>`).join("");
 }
 
 async function loadChats() {
@@ -57,7 +58,7 @@ async function openChat(chatId) {
   if (chat.tripId && chat.tripId !== S.tripId) setTrip(chat.tripId, false);
   $("chatTitle").textContent = `${modeInfo(chat.mode).icon} ${chat.title}`;
   $("translateBar").classList.toggle("hidden", chat.mode !== "translate");
-  $("input").placeholder = chat.mode === "translate" ? "Type something to translate…" : chat.mode === "splitwise" ? "e.g. I paid 1200 for dinner, split with Rahul and Priya" : "Ask Biruni anything…";
+  $("input").placeholder = chat.mode === "translate" ? "Type something to translate…" : chat.mode === "splitwise" ? "e.g. I paid 1200 for dinner, split with Rahul and Priya" : chat.mode === "general" ? "Ask anything — filed in the right chat too. /recall <name> · /btw <side question, not saved>" : "Ask Biruni anything…  (/btw for an unsaved side question)";
   const box = $("messages");
   box.innerHTML = "";
   if (!messages.length) box.append(heroFor(chat.mode));
@@ -75,10 +76,12 @@ function heroFor(mode) {
     maps: ["Where am I?", "Nearest ATM", "Directions to the railway station"],
     calendar: ["What's on my calendar this week?", "Add check-out at 11am on Friday"],
     budget: ["How much can Biruni spend for me?", "What's protected in my account?"],
+    custom: ["What can you do in this chat?"],
   }[mode] ?? [];
   const d = document.createElement("div");
   d.className = "hero";
-  d.innerHTML = `<div class="hero-logo">${modeInfo(mode).icon}</div><h1>${esc(modeInfo(mode).label)}</h1><div class="chips">${ideas.map((i) => `<button class="chip" data-say="${esc(i)}">${esc(i)}</button>`).join("")}</div>`;
+  const title = mode === "custom" ? S.chats.find((c) => c.chatId === S.chatId)?.title ?? "Custom chat" : modeInfo(mode).label;
+  d.innerHTML = `<div class="hero-logo">${modeInfo(mode).icon}</div><h1>${esc(title)}</h1>${mode === "custom" ? `<p class="muted">${esc(S.chats.find((c) => c.chatId === S.chatId)?.custom?.instructions ?? "")}</p>` : ""}<div class="chips">${ideas.map((i) => `<button class="chip" data-say="${esc(i)}">${esc(i)}</button>`).join("")}</div>`;
   return d;
 }
 
@@ -89,7 +92,7 @@ function renderEmpty() {
   box.innerHTML = "";
   const hero = document.createElement("div");
   hero.className = "hero";
-  hero.innerHTML = `<div class="hero-logo">◐</div><h1>Where to?</h1><p class="muted">Plans, disruptions, translation, splitting bills, maps — one place.</p><div class="chips">${S.modes.map((m) => `<button class="chip" data-mode="${m.mode}">${m.icon} ${esc(m.label)}</button>`).join("")}</div>`;
+  hero.innerHTML = `<div class="hero-logo">◐</div><h1>Where to?</h1><p class="muted">Plans, disruptions, translation, splitting bills, maps — one place.</p><div class="chips">${S.modes.filter((m) => m.mode !== "custom").map((m) => `<button class="chip" data-mode="${m.mode}">${m.icon} ${esc(m.label)}</button>`).join("")}<button class="chip" data-custom="1">✎ Custom chat…</button></div>`;
   box.append(hero);
 }
 
@@ -99,7 +102,9 @@ function addMsg(role, text, m = {}) {
   const d = document.createElement("div");
   d.className = `msg ${role}`;
   const tools = (m.tools ?? []).map((t) => `<span class="tool-chip">${esc(t)}</span>`).join("");
-  const meta = role === "assistant" ? `<div class="meta">${tools}${m.source ? `<span>${esc(String(m.source).replace("ONLINE_MODEL:", "").replace("OFFLINE_MODEL:", "offline · "))}</span>` : ""}<button class="play" data-play="${esc(text)}">🔊</button></div>` : "";
+  const filed = (m.copiedTo ?? []).map((c) => `<button class="filed" data-chat="${c.chatId}">↪ filed in ${esc(modeInfo(c.mode).icon)} ${esc(modeInfo(c.mode).label)}</button>`).join("");
+  const from = m.copiedFrom ? `<span class="copied-tag">↪ from General</span>` : "";
+  const meta = role === "assistant" ? `<div class="meta">${from}${tools}${m.source ? `<span>${esc(String(m.source).replace("ONLINE_MODEL:", "").replace("OFFLINE_MODEL:", "offline · "))}</span>` : ""}<button class="play" data-play="${esc(text)}">🔊</button>${filed}</div>` : from ? `<div class="meta">${from}</div>` : "";
   d.innerHTML = `<div class="bubble">${fmt(text)}</div>${meta}`;
   box.append(d);
   box.scrollTop = box.scrollHeight;
@@ -115,7 +120,8 @@ async function send(text) {
     store.set("chatId", c.chatId);
     await openChat(c.chatId);
   }
-  addMsg("user", text);
+  const userEl = addMsg("user", text);
+  if (/^\/btw\s/i.test(text)) userEl.querySelector(".bubble").style.opacity = "0.7";
   const typing = document.createElement("div");
   typing.className = "msg assistant";
   typing.innerHTML = `<div class="bubble typing">Thinking</div>`;
@@ -125,7 +131,8 @@ async function send(text) {
     const isTr = S.chats.find((c) => c.chatId === S.chatId)?.mode === "translate" || !$("translateBar").classList.contains("hidden");
     const r = await api("POST", `/api/chats/${S.chatId}/messages`, isTr ? { text, targetLanguage: $("toLang").value, sourceLanguage: $("fromLang").value } : { text });
     typing.remove();
-    addMsg("assistant", r.message.text, r.message);
+    const el = addMsg("assistant", r.message.text, { ...r.message, copiedTo: r.copiedTo });
+    if (r.ephemeral) el.style.opacity = "0.8";
     if ($("speak").checked) speak(r.message.text, langForSpeech());
     loadChats();
     refreshTrip();
@@ -138,21 +145,40 @@ async function send(text) {
 }
 
 // ---------------- voice ----------------
-const langForSpeech = () => (S.chats.find((c) => c.chatId === S.chatId)?.mode === "translate" ? $("toLang").value : "en-IN");
+const langForSpeech = () => (S.chats.find((c) => c.chatId === S.chatId)?.mode === "translate" ? $("toLang").value : $("voiceLang").value || "en-IN");
+
+// Device built-in voices (Web Speech API). Gnani audio is used only when the server has a key.
+let deviceVoices = [];
+const loadVoices = () => (deviceVoices = "speechSynthesis" in window ? speechSynthesis.getVoices() : []);
+if ("speechSynthesis" in window) { loadVoices(); speechSynthesis.addEventListener?.("voiceschanged", loadVoices); }
+const voiceFor = (lang) => {
+  const l = lang.toLowerCase(), base = l.split("-")[0];
+  return deviceVoices.find((v) => v.lang?.toLowerCase() === l) ?? deviceVoices.find((v) => v.lang?.toLowerCase().startsWith(base));
+};
 
 async function speak(text, lang = "en-IN") {
-  try {
-    const r = await api("POST", "/api/voice/tts", { text, language: lang });
-    if (r.audioUrl) return void new Audio(r.audioUrl).play();
-  } catch {}
-  if ("speechSynthesis" in window) {
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = lang;
-    const v = speechSynthesis.getVoices().find((x) => x.lang?.toLowerCase().startsWith(lang.slice(0, 2).toLowerCase()));
-    if (v) u.voice = v;
-    speechSynthesis.cancel();
-    speechSynthesis.speak(u);
+  if (S.connections?.voice?.mode === "Gnani") {
+    try {
+      const r = await api("POST", "/api/voice/tts", { text, language: lang });
+      if (r.audioUrl) return void new Audio(r.audioUrl).play();
+    } catch {}
   }
+  if (!("speechSynthesis" in window)) return note("This browser can't speak. Try Chrome or Edge.");
+  loadVoices();
+  const v = voiceFor(lang);
+  if (!v && !lang.startsWith("en")) note(`No built-in ${langLabel(lang)} voice on this device; reading with the default voice. Install the language's text-to-speech voice in your phone settings for proper pronunciation.`);
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = lang;
+  if (v) u.voice = v;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+}
+const langLabel = (code) => S.langs.find((l) => l.code === code)?.name ?? code;
+let lastNote = "";
+function note(t) {
+  if (t === lastNote) return;
+  lastNote = t;
+  addMsg("assistant", t, { source: "device" });
 }
 
 // WAV recorder (Gnani STT accepts wav; browser MediaRecorder gives webm, which it doesn't list).
@@ -201,7 +227,7 @@ function browserListen(lang) {
 
 let recorder = null;
 async function listen(lang, button) {
-  const gnani = S.connections?.rails?.gnani === "GnaniProvider";
+  const gnani = S.connections?.voice?.mode === "Gnani";
   if (!gnani) {
     button.classList.add("rec");
     try { return { text: await browserListen(lang) }; } finally { button.classList.remove("rec"); }
@@ -214,9 +240,10 @@ async function listen(lang, button) {
 
 $("mic").onclick = async () => {
   try {
-    const r = await listen("en-IN", $("mic"));
+    const vl = $("voiceLang").value || "en-IN";
+    const r = await listen(vl, $("mic"));
     if (!r) return;
-    const text = r.text ?? (await api("POST", "/api/voice/stt", { audioBase64: r.audioBase64, mime: r.mime, language: "en-IN" })).text;
+    const text = r.text ?? (await api("POST", "/api/voice/stt", { audioBase64: r.audioBase64, mime: r.mime, language: vl })).text;
     if (text) send(text);
   } catch (e) {
     addMsg("assistant", `Mic: ${e.message}`);
@@ -242,6 +269,7 @@ $("voiceTranslate").onclick = async () => {
   }
 };
 
+$("voiceLang").onchange = (e) => store.set("voiceLang", e.target.value);
 $("swapLang").onclick = () => {
   const f = $("fromLang").value;
   if (f === "auto") return;
@@ -256,6 +284,13 @@ async function loadLanguages() {
   $("toLang").innerHTML = opts;
   $("fromLang").value = "auto";
   $("toLang").value = "hi-IN";
+  const fillVoice = () => {
+    loadVoices();
+    $("voiceLang").innerHTML = S.langs.map((l) => `<option value="${l.code}">${esc(l.name)}${voiceFor(l.code) ? " 🔈" : ""}</option>`).join("");
+    $("voiceLang").value = store.get("voiceLang", "en-IN");
+  };
+  fillVoice();
+  if ("speechSynthesis" in window) speechSynthesis.addEventListener?.("voiceschanged", fillVoice);
 }
 
 // ---------------- trips ----------------
@@ -372,11 +407,45 @@ let pending;
 const scheduleRefresh = () => (clearTimeout(pending), (pending = setTimeout(refreshTrip, 150)));
 
 // ---------------- map, GPS, accelerometer ----------------
-let map, meMarker, routeLine;
+// MapLibre GL + OpenStreetMap data. Vector style from OpenFreeMap (free, no key);
+// falls back to OSM raster tiles if that style can't load.
+const OSM_RASTER = {
+  version: 8,
+  sources: { osm: { type: "raster", tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], tileSize: 256, attribution: "© OpenStreetMap contributors" } },
+  layers: [{ id: "osm", type: "raster", source: "osm" }],
+};
+let map, meMarker, mapReady = false, pendingRoute = null;
 function ensureMap() {
-  if (map || !window.L) return;
-  map = L.map("map", { zoomControl: true, attributionControl: true }).setView([20.6, 78.9], 4);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(map);
+  if (map || !window.maplibregl) {
+    if (!window.maplibregl) $("mapNote").textContent = "· map library didn't load (offline?)";
+    return;
+  }
+  map = new maplibregl.Map({ container: "map", style: "https://tiles.openfreemap.org/styles/liberty", center: [78.9, 20.6], zoom: 3.5, attributionControl: { compact: true } });
+  window.__map = map;
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  let fellBack = false;
+  map.on("error", (e) => {
+    if (!fellBack && !mapReady && String(e?.error?.message ?? "").match(/style|fetch|Failed/i)) {
+      fellBack = true;
+      map.setStyle(OSM_RASTER);
+    }
+  });
+  map.on("load", () => {
+    mapReady = true;
+    if (pendingRoute) drawRoute(pendingRoute);
+  });
+}
+function drawRoute(route) {
+  if (!mapReady) return void (pendingRoute = route);
+  const geo = { type: "Feature", geometry: { type: "LineString", coordinates: route.geometry.map(([lat, lng]) => [lng, lat]) }, properties: {} };
+  if (map.getSource("route")) map.getSource("route").setData(geo);
+  else {
+    map.addSource("route", { type: "geojson", data: geo });
+    map.addLayer({ id: "route", type: "line", source: "route", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#4ea1ff", "line-width": 5, "line-opacity": 0.9 } });
+  }
+  const b = new maplibregl.LngLatBounds();
+  geo.geometry.coordinates.forEach((c) => b.extend(c));
+  map.fitBounds(b, { padding: 30, duration: 600 });
 }
 
 async function refreshDevice() {
@@ -386,18 +455,20 @@ async function refreshDevice() {
   if ($("drawer").classList.contains("hidden")) return;
   ensureMap();
   if (!map) return;
-  setTimeout(() => map.invalidateSize(), 50);
+  setTimeout(() => map.resize(), 50);
   if (st.location) {
-    const ll = [st.location.lat, st.location.lng];
-    meMarker ? meMarker.setLatLng(ll) : (meMarker = L.circleMarker(ll, { radius: 7, color: "#4ea1ff", fillOpacity: 0.9 }).addTo(map).bindPopup("You"));
+    const ll = [st.location.lng, st.location.lat];
+    if (!meMarker) {
+      const el = document.createElement("div");
+      el.style.cssText = "width:14px;height:14px;border-radius:50%;background:#4ea1ff;border:2px solid #fff;box-shadow:0 0 0 6px rgba(78,161,255,.25)";
+      meMarker = new maplibregl.Marker({ element: el }).setLngLat(ll).addTo(map);
+    } else meMarker.setLngLat(ll);
     $("mapNote").textContent = `· ±${Math.round(st.location.accuracy ?? 0)} m`;
-    if (!st.route) map.setView(ll, 15);
+    if (!st.route) map.easeTo({ center: ll, zoom: 14 });
   }
   if (st.route?.geometry?.length) {
-    routeLine?.remove();
-    routeLine = L.polyline(st.route.geometry, { color: "#f5f5f5", weight: 4, opacity: 0.85 }).addTo(map);
-    map.fitBounds(routeLine.getBounds(), { padding: [20, 20] });
-    $("routeSteps").innerHTML = `<li class="muted">${esc(st.route.to?.name ?? "")}: ${(st.route.distanceM / 1000).toFixed(1)} km · ${Math.round(st.route.durationS / 60)} min</li>` + st.route.steps.map((s) => `<li>${esc(s)}</li>`).join("");
+    drawRoute(st.route);
+    $("routeSteps").innerHTML = `<li class="muted">${esc(st.route.to?.name ?? "")}: ${(st.route.distanceM / 1000).toFixed(1)} km · ${Math.round(st.route.durationS / 60)} min</li>` + st.route.steps.map((x) => `<li>${esc(x)}</li>`).join("");
   }
 }
 
@@ -454,17 +525,17 @@ async function openConnections() {
   $("connList").innerHTML = [
     row("Language model", !!c.models.online, c.models.online ? `${esc(c.models.online.provider)} · ${esc(c.models.online.model)}${c.models.lastError ? ` · last error: ${esc(c.models.lastError.slice(0, 80))}` : ""}` : "Set GEMINI_API_KEY or ONLINE_MODEL_API_KEY", c.models.online ? "Configured" : undefined),
     row("Offline model", false, c.models.offline ? `${esc(c.models.offline.model)} via local Ollama — used when you switch Online off; only reachable on your own machine` : "OFFLINE_MODEL_CONFIG", c.models.offline ? "Configured" : "Off"),
-    row("Gnani voice", live(c.rails.gnani), live(c.rails.gnani) ? "Live TTS/STT" : "Set GNANI_API_KEY · browser speech used meanwhile"),
+    row("Voice", true, c.voice?.mode === "Gnani" ? "Gnani live TTS/STT" : `Device built-in voices: ${deviceVoices.length} on this device (${[...new Set(deviceVoices.map((v) => v.lang))].slice(0, 12).join(", ") || "none listed yet"}). Gnani activates when GNANI_API_KEY is set.`, c.voice?.mode === "Gnani" ? "Gnani" : "Built-in"),
     row("Pine Labs", live(c.rails.pineLabs), live(c.rails.pineLabs) ? "Live: charges become payment links the traveller completes" : "Simulated · set PINELABS_CLIENT_ID/API_KEY"),
-    row("Transport inventory", false, "Simulated: no bus/train booking API is wired (Delhivery has none)", "Simulated"),
+    row("Delhivery", true, esc(c.rails.delhivery?.note ?? "Active"), "Active"),
     row("Setu AA", live(c.rails.setuAA), live(c.rails.setuAA) ? "Live (consented data)" : "Simulated · set SETU_ACCESS_TOKEN/PRODUCT_INSTANCE_ID"),
     row("Zerodha", live(c.rails.zerodha), live(c.rails.zerodha) ? `Read-only · <a href="/api/zerodha/login" style="color:var(--link)">Log in to Kite today →</a>` : "Simulated · set ZERODHA_API_KEY/SECRET"),
-    row("Delhivery Maps", c.mcpServers.some((m) => m.name === "delhivery_maps" && m.connected), c.mcpServers.some((m) => m.name === "delhivery_maps") ? "MCP server (geocode, route)" : "Set DELHIVERY_MAPS_TOKEN to auto-connect its MCP server"),
+    row("Transport inventory", false, "Simulated alternatives and PNRs for any city pair", "Simulated"),
     row("Google Calendar", c.calendar.canRead, c.calendar.linked ? "Linked (read + write)" : c.calendar.icsReadOnly ? "Read-only via ICS" : c.calendar.oauthConfigured ? `<a href="/api/calendar/connect" style="color:var(--link)">Connect your calendar →</a>` : "Set GOOGLE_CLIENT_ID/SECRET, or GOOGLE_CALENDAR_ICS_URL"),
     row("Reddit", c.reddit.configured, esc(c.reddit.note)),
     row("YouTube", c.youtube.configured, c.youtube.configured ? "Data API v3" : "Set YOUTUBE_API_KEY (Gemini key won't work)"),
     row("Splitwise", c.splitwise.configured, c.splitwise.configured ? "Sync enabled" : "Local splitting works; set SPLITWISE_API_KEY to sync"),
-    row("Maps", true, esc(c.maps.provider)),
+    row("Maps", true, esc(c.maps.provider) + " · no key needed"),
   ].join("");
   renderMcp(c.mcpServers);
   const sc = await api("GET", "/api/scenarios");
@@ -491,6 +562,9 @@ async function openMemory() {
   const [g, rep] = await Promise.all([api("GET", "/api/memory/graph"), api("GET", "/api/memory/report")]);
   $("memReport").textContent = rep.markdown;
   drawGraph(g);
+  $("recallInput").value = "";
+  $("recallResults").innerHTML = "";
+  setTimeout(() => $("recallInput").focus(), 50);
   $("memDialog").showModal();
 }
 function drawGraph(g) {
@@ -512,9 +586,24 @@ function drawGraph(g) {
   const palette = ["#f5f5f5", "#4ea1ff", "#58c98a", "#f0a35e", "#c58af9", "#f07a6f", "#9aa0a6", "#6fd3d3"];
   svg.innerHTML = nodes.length
     ? links.map((l) => { const a = nodes[idx.get(l.source)], b = nodes[idx.get(l.target)]; return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"><title>${esc(l.relation)}</title></line><text x="${(a.x + b.x) / 2}" y="${(a.y + b.y) / 2}" style="fill:var(--muted);font-size:9px" text-anchor="middle">${esc(l.relation.replace(/_/g, " "))}</text>`; }).join("") +
-      nodes.map((n) => `<circle cx="${n.x}" cy="${n.y}" r="${5 + Math.min(8, n.mentions)}" fill="${palette[n.community % palette.length]}"><title>${esc(n.community_name)}</title></circle><text x="${n.x + 9}" y="${n.y + 4}">${esc(n.label.slice(0, 28))}</text>`).join("")
+      nodes.map((n) => `<circle data-id="${esc(n.id)}" cx="${n.x}" cy="${n.y}" r="${5 + Math.min(8, n.mentions)}" fill="${palette[n.community % palette.length]}"><title>${esc(n.community_name)}</title></circle><text x="${n.x + 9}" y="${n.y + 4}">${esc(n.label.slice(0, 28))}</text>`).join("")
     : `<text x="400" y="230" text-anchor="middle" style="fill:var(--muted)">Nothing remembered yet — tell Biruni about your travel companions or preferences.</text>`;
 }
+let recallTimer;
+$("recallInput").addEventListener("input", (e) => {
+  clearTimeout(recallTimer);
+  recallTimer = setTimeout(async () => {
+    const q = e.target.value.trim();
+    document.querySelectorAll("#graph circle").forEach((c) => c.classList.remove("hit"));
+    if (q.length < 2) return void ($("recallResults").innerHTML = "");
+    const hits = await api("GET", `/api/memory/recall?q=${encodeURIComponent(q)}`);
+    $("recallResults").innerHTML = hits.length
+      ? hits.map((h) => `<div class="recall-hit"><b>${esc(h.label)}</b> <span class="muted">${esc(h.type)} · ${esc(h.community)} · seen ${h.mentions}×</span>${h.facts.length ? `<div>${h.facts.map(esc).join(" · ")}</div>` : ""}</div>`).join("")
+      : `<p class="muted small">Nothing remembered about "${esc(q)}".</p>`;
+    const ids = new Set(hits.map((h) => h.id));
+    document.querySelectorAll("#graph circle").forEach((c) => ids.has(c.dataset.id) && c.classList.add("hit"));
+  }, 120);
+});
 $("memExport").onclick = async () => {
   const r = await api("POST", "/api/memory/export");
   alert(`Wrote ${r.written.join(", ")} on the server`);
@@ -522,6 +611,7 @@ $("memExport").onclick = async () => {
 
 // ---------------- wiring ----------------
 document.addEventListener("click", async (e) => {
+  if (e.target.closest("[data-custom]")) return openCustom();
   const t = e.target.closest("[data-mode],[data-chat],[data-del],[data-say],[data-play],[data-close],[data-scenario],[data-mcp-re],[data-mcp-del]");
   if (!t) return;
   if (t.dataset.del) {
@@ -560,6 +650,40 @@ const autosize = () => { const i = $("input"); i.style.height = "auto"; i.style.
 $("input").addEventListener("input", autosize);
 $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("composer").requestSubmit(); } });
 $("newChatBtn").onclick = () => $("modeMenu").classList.toggle("hidden");
+$("topNewChat").onclick = () => {
+  $("sidebar").classList.add("open");
+  $("modeMenu").classList.remove("hidden");
+};
+async function openCustom() {
+  $("modeMenu").classList.add("hidden");
+  const groups = await api("GET", "/api/tool-groups");
+  $("toolGroups").innerHTML = groups.map((g) => `<label><input type="checkbox" name="groups" value="${g.id}" ${["trip", "plans", "maps"].includes(g.id) ? "checked" : ""}/> ${esc(g.label)}</label>`).join("");
+  $("customForm").reset();
+  $("customDialog").showModal();
+}
+$("customDialog").addEventListener("close", async () => {
+  if ($("customDialog").returnValue !== "ok") return;
+  const fd = new FormData($("customForm"));
+  try {
+    const c = await api("POST", "/api/chats", { mode: "custom", tripId: S.tripId || undefined, title: fd.get("title"), custom: { instructions: fd.get("instructions"), groups: fd.getAll("groups") } });
+    await loadChats();
+    await openChat(c.chatId);
+    $("input").focus();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+async function renameChat() {
+  if (!S.chatId) return;
+  const cur = S.chats.find((c) => c.chatId === S.chatId)?.title ?? "";
+  const t = prompt("Rename chat", cur);
+  if (!t || t === cur) return;
+  await api("POST", `/api/chats/${S.chatId}/rename`, { title: t });
+  await loadChats();
+  await openChat(S.chatId);
+}
+$("renameBtn").onclick = renameChat;
+$("chatTitle").ondblclick = renameChat;
 const openDrawer = () => { $("drawer").classList.remove("hidden"); refreshTrip(); };
 $("tripBtn").onclick = () => ($("drawer").classList.contains("hidden") ? openDrawer() : $("drawer").classList.add("hidden"));
 $("closeDrawer").onclick = () => $("drawer").classList.add("hidden");
@@ -568,6 +692,10 @@ $("memoryBtn").onclick = () => openMemory().catch((e) => alert(e.message));
 $("openSidebar").onclick = () => $("sidebar").classList.add("open");
 const closeSidebar = () => $("sidebar").classList.remove("open");
 $("closeSidebar").onclick = closeSidebar;
+
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); $("topNewChat").click(); }
+});
 
 (async function init() {
   await loadModes();

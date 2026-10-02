@@ -45,8 +45,8 @@ const voice_speak: ToolDef<"voice_speak"> = {
 
 const route_search: ToolDef<"route_search"> = {
   name: "route_search",
-  rail: "Delhivery",
-  description: "Find alternative routes between two places (live via Delhivery, or from the pre-fetched offline cache).",
+  rail: "Transport simulator (maps: OpenStreetMap)",
+  description: "Find alternative transport between two places (simulated inventory, or the pre-fetched offline cache).",
   allowedAgents: ["travel"],
   spend: none,
   idempotencyKey: noKey,

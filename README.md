@@ -10,11 +10,11 @@ On top of the spec's recovery engine there is a conversational layer:
 - **long-term memory** stored as a knowledge graph in graphify's format
 - voice translation across 23 Indian languages
 - phone GPS and crash detection
-- OpenStreetMap maps and directions
+- OpenStreetMap data on a MapLibre map, with directions
 - Google Calendar, Reddit, YouTube and Splitwise connectors
 - connecting **external MCP servers**
 
-**Status, bluntly:** the recovery engine, guardrails, chats, memory, expense splitting, maps, translation (text) and the MCP client are tested and work. Live adapters for Gnani, Pine Labs, Setu AA, Zerodha, Google Calendar, Reddit, YouTube and Splitwise are written from each provider's official docs or SDK but **have not been run against real accounts**: no keys were available. Without keys, those rails run on the simulator. See [What is not built](#what-is-not-built).
+**Status, bluntly:** the recovery engine, guardrails, chats, memory, expense splitting, maps, translation (text) and the MCP client are tested and work. Live adapters for Gnani, Pine Labs, Setu AA, Zerodha, Google Calendar, Reddit, YouTube and Splitwise are written from each provider's official docs or SDK but **have not been run against real accounts**: no keys were available. Without keys, those rails run on the simulator, and voice uses the device's built-in voices. **Delhivery is decorative for now:** it shows as active but returns empty results. See [What is not built](#what-is-not-built).
 
 ## Quickstart
 
@@ -23,14 +23,19 @@ Requires Node ≥ 22.5. Persistence uses the built-in `node:sqlite`, which is st
 ```bash
 npm install
 cp .env.example .env   # put GEMINI_API_KEY (or ONLINE_MODEL_API_KEY) in it; .env is git-ignored
-npm test          # 31 tests: authority, payments, idempotency, recovery, restart, chats, memory, expenses, sensors
+npm test          # 38 tests: authority, payments, idempotency, recovery, restart, chats, memory, expenses, sensors
 npm run demo      # CLI walkthrough of every scenario (short undo window)
 npm start         # API + demo UI on http://localhost:8787 (30s undo window)
 npm run models:check   # ping Nemotron (needs ONLINE_MODEL_API_KEY) and local Qwen/Ollama
 ```
 
 In the UI:
-- **＋ New chat** picks a function.
+- **＋ New chat** (sidebar or top bar, or Ctrl/Cmd+Shift+O) picks a function, or **✎ Custom chat…** where you write the instructions and pick which tool groups it may use. Double-click a chat title to rename it.
+- **General auto-files:** a General message that turns into an expense, disruption, map query, plan, translation and so on is also copied, with its reply, into that function's chat. The chat is created if needed.
+- **Commands** (no model call, except `/btw`):
+  - `/recall <name>` instantly answers from memory.
+  - `/forget <thing>` deletes it from memory.
+  - `/btw <question>` asks a side question that's answered with read-only tools and **never saved**: no chat history, no memory, no auto-filing.
 - **Trip ＋** creates your own trip (any cities).
 - **Connections** shows what's live and runs the competition demo scenarios.
 - **Memory graph** shows everything Biruni remembers.
@@ -131,7 +136,8 @@ npm run models:check
 | Translator | translates only the latest message into the chosen language, with pronunciation; **Speak & translate** button for voice → voice | `speak` |
 | Split expenses | Splitwise-style group expenses, balances, fewest transfers to settle | `add_expense`, `get_balances`, `settle_up`, `splitwise_push` |
 | Discover | lesser-known places from Reddit and YouTube | `discover_places` |
-| Maps | live location, nearby ATMs, hospitals and police, turn-by-turn directions drawn on the map | `where_am_i`, `nearby_places`, `directions` |
+| Maps | live location, nearby ATMs, hospitals and police (and **vegetarian** places, using OSM's `diet:vegetarian` tag), turn-by-turn directions drawn on a MapLibre map | `where_am_i`, `nearby_places`, `directions` |
+| Custom | your own instructions plus the tool groups you tick | chosen per chat |
 | Calendar | read and add Google Calendar events | `calendar_list_events`, `calendar_add_event` |
 | Budget | authority left, free balance after protected obligations | `get_budget` |
 
@@ -143,13 +149,17 @@ Guardrails that stay deterministic even with an LLM in the loop:
 - Each chat only sees its own tools.
 - External MCP tools never get money or approval powers, and their output is treated as untrusted data.
 
+**Memory hygiene:** facts that are too short, too long or vague ("it is something") are rejected before they're stored. Use `/btw` for throwaway questions, and `/forget` to remove anything wrong. The Memory graph window has a quick-recall search that highlights matching nodes.
+
 **Memory** lives in `memory_nodes` and `memory_links` and is exported (`/api/memory/graph`, or "Export" writes `memory-out/graph.json` and `GRAPH_REPORT.md`) in graphify's networkx node-link format: `nodes`, `links` with `relation`, `confidence` and `source_file`, `hyperedges` and communities. Repeating a fact strengthens its edge. Relevant facts are recalled into every chat.
 
-**Voice translation:** speech-to-text, then LLM translation, then text-to-speech. With `GNANI_API_KEY`, Gnani handles speech in and out for 10 languages (en, hi, bn, ta, te, kn, ml, mr, gu, pa). The other 13 (Odia, Assamese, Urdu, Konkani and others) get text translation plus whatever speech voices the phone's browser has. Speech quality for those depends on the device, not on Biruni.
+**Voice translation:** speech-to-text, then LLM translation, then text-to-speech. **Right now it uses the device's built-in voices** (browser speech recognition and synthesis). The sidebar "Voice" picker marks languages your device can speak with 🔈. With `GNANI_API_KEY`, Gnani handles speech in and out for 10 languages (en, hi, bn, ta, te, kn, ml, mr, gu, pa). The other 13 (Odia, Assamese, Urdu, Konkani and others) get text translation plus whatever speech voices the phone's browser has. Speech quality for those depends on the device, not on Biruni.
 
 **Crash detection** is a heuristic, not a certified safety system. When the phone reports at least 3.5 g followed by stillness, Biruni asks "Are you OK?". With no answer in 30 seconds, it escalates through the normal SAFETY policy. That means 112 guidance, and the emergency contact is alerted only if the traveller opted in; otherwise Biruni asks first.
 
-**External MCP servers:** add any HTTP MCP server in Connections. stdio servers, which run a local command, are only allowed through the server-side `BIRUNI_MCP_SERVERS` env. Letting a web page start commands would be a remote-code-execution hole. Delhivery Maps' own MCP server auto-connects when `DELHIVERY_MAPS_TOKEN` is set.
+**External MCP servers:** add any HTTP MCP server in Connections. stdio servers, which run a local command, are only allowed through the server-side `BIRUNI_MCP_SERVERS` env. Letting a web page start commands would be a remote-code-execution hole.
+
+**Maps:** MapLibre GL shows OpenStreetMap data through OpenFreeMap's free vector style, falling back to standard OSM raster tiles. Search, nearby places and directions use Nominatim, Overpass and OSRM. No keys are needed. These are free community services with fair-use limits, so self-host them or pay a provider before real traffic.
 
 ## Live rails: what each adapter does
 
@@ -159,7 +169,7 @@ Guardrails that stay deterministic even with an LLM in the loop:
 | Pine Labs | pinelabs.com Plural API docs | a charge becomes a **payment link the traveller must complete**; status by merchant reference; refunds | **No** |
 | Setu AA | docs.setu.co FIU APIs | consent, then data session, then 6 months of debits | **No**; token acquisition isn't covered in the docs I read, so set `SETU_ACCESS_TOKEN` |
 | Zerodha | kite.trade Kite Connect v3 docs | daily login flow, read-only holdings | **No** |
-| Delhivery | delhivery.com/maps/developer | Maps MCP server (geocode, route). There's no transport inventory API, so bus and train alternatives stay simulated | **No**; Bearer auth assumed |
+| Delhivery | — | **Decorative for now:** shows active and accepts calls but returns empty results, even with a key. Maps use OpenStreetMap and transport alternatives are simulated | n/a |
 | Google Calendar | Google OAuth and Calendar v3 | OAuth read and write, or ICS read-only | **No** |
 | Reddit / YouTube / Splitwise | public API docs | search, search, sync | **No** (Reddit anonymous is blocked from cloud IPs) |
 | Gemini (stand-in LLM) | Google OpenAI-compatible endpoint | tool calling | **Yes** |

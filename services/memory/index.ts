@@ -53,6 +53,7 @@ export const slug = (s: string) => s.toLowerCase().normalize("NFKD").replace(/[^
 export const nodeId = (type: NodeType, label: string) => `${type}_${slug(label)}`;
 
 export class MemoryGraph {
+  private cache?: { nodes: MemNode[]; links: MemLink[] };
   constructor(private store: Store) {}
 
   upsertNode(type: NodeType, label: string, source: string, attrs?: Record<string, unknown>): MemNode {
@@ -63,6 +64,7 @@ export class MemoryGraph {
       ? { ...prev, mentions: prev.mentions + 1, attrs: { ...prev.attrs, ...attrs }, updated_at: nowIso() }
       : { id, label: label.slice(0, 120), norm_label: label.toLowerCase().slice(0, 120), type, community, community_name, source_file: source, file_type: "memory", mentions: 1, attrs, created_at: nowIso(), updated_at: nowIso() };
     this.store.put("memory_nodes", id, node, { key: type });
+    this.cache = undefined;
     return node;
   }
 
@@ -74,11 +76,25 @@ export class MemoryGraph {
       ? { ...prev, weight: prev.weight + 1, confidence_score: Math.max(prev.confidence_score, score) }
       : { id, source, target, relation: rel, confidence, confidence_score: score, source_file: from, weight: 1, created_at: nowIso() };
     this.store.put("memory_links", id, link, { key: source });
+    this.cache = undefined;
     return link;
+  }
+
+  /** Rejects junk before it enters long-term memory. Returns a reason, or undefined if acceptable. */
+  static junk(f: { subject: string; relation: string; object: string }): string | undefined {
+    const sub = String(f.subject ?? "").trim(), obj = String(f.object ?? "").trim(), rel = String(f.relation ?? "").trim();
+    if (sub.length < 2 || obj.length < 2 || rel.length < 2) return "too short";
+    if (sub.length > 80 || obj.length > 80 || rel.length > 40) return "too long to be a durable fact";
+    const vague = /^(it|this|that|they|something|anything|stuff|thing|unknown|n\/a|none|null|undefined|ok|yes|no)$/i;
+    if (vague.test(sub) || vague.test(obj)) return "too vague";
+    if (sub.toLowerCase() === obj.toLowerCase()) return "subject equals object";
+    return undefined;
   }
 
   /** Store a subject–relation–object fact. */
   remember(f: { subject: string; subject_type?: NodeType; relation: string; object: string; object_type?: NodeType }, chatId: string, confidence: MemLink["confidence"] = "INFERRED") {
+    const bad = MemoryGraph.junk(f);
+    if (bad) return { skipped: `${f.subject} ${f.relation} ${f.object}`.slice(0, 120), reason: bad };
     const a = this.upsertNode(f.subject_type ?? "thing", f.subject, chatId);
     const b = this.upsertNode(f.object_type ?? "thing", f.object, chatId);
     const l = this.link(a.id, b.id, f.relation, chatId, confidence, confidence === "EXTRACTED" ? 1 : 0.8);
@@ -86,11 +102,53 @@ export class MemoryGraph {
     return { subject: a.id, object: b.id, relation: l.relation };
   }
 
+  // In-RAM cache for quick recall; invalidated on every write.
+  private load() {
+    return (this.cache ??= { nodes: this.store.list<MemNode>("memory_nodes"), links: this.store.list<MemLink>("memory_links") });
+  }
   nodes() {
-    return this.store.list<MemNode>("memory_nodes");
+    return this.load().nodes;
+  }
+
+  /** /forget: delete nodes matching the query and every link touching them. */
+  forget(q: string): string[] {
+    const hits = this.search(q, 10).filter((h) => h.type !== "traveller" && h.type !== "chat");
+    for (const h of hits) {
+      for (const l of this.links().filter((l) => l.source === h.id || l.target === h.id)) this.store.delete("memory_links", l.id);
+      this.store.delete("memory_nodes", h.id);
+    }
+    this.cache = undefined;
+    if (hits.length) bus.emitEvent({ tripId: "*", agent: "memory", type: "MEMORY", detail: `Forgot ${hits.map((h) => h.label).join(", ")}` });
+    return hits.map((h) => h.label);
   }
   links() {
-    return this.store.list<MemLink>("memory_links");
+    return this.load().links;
+  }
+
+  /** Quick recall: nodes whose label contains any query word, with their direct facts. No model call. */
+  search(q: string, limit = 20) {
+    const words = q.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 2);
+    if (!words.length) return [];
+    const { nodes, links } = this.load();
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const score = (n: MemNode) => words.filter((w) => n.norm_label.includes(w)).length;
+    return nodes
+      .map((n) => ({ n, s: score(n) }))
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s || b.n.mentions - a.n.mentions)
+      .slice(0, limit)
+      .map(({ n }) => ({
+        id: n.id,
+        label: n.label,
+        type: n.type,
+        community: n.community_name,
+        mentions: n.mentions,
+        facts: links
+          .filter((l) => l.source === n.id || l.target === n.id)
+          .sort((a, b) => b.weight - a.weight)
+          .slice(0, 12)
+          .map((l) => `${byId.get(l.source)?.label ?? l.source} ${l.relation.replace(/_/g, " ")} ${byId.get(l.target)?.label ?? l.target}`),
+      }));
   }
 
   /** Facts relevant to a message: nodes whose label appears in it, their neighbours, plus the traveller's preferences. */

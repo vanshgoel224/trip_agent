@@ -162,3 +162,105 @@ test("script check flags translations in the wrong script", async () => {
   assert.ok(scriptScore("നിക്കടസ്ഥിത ആശുപത്രി କେଉଁଠାରି ଅଛି?", "or-IN") < 0.85, "mixed Malayalam/Odia is caught");
   assert.equal(scriptScore("பேருந்து நிலையம் எங்கே?", "ta-IN"), 1);
 });
+
+test("custom chats: traveller-written instructions and only the tool groups they picked", async () => {
+  await withModel();
+  const { b, tripId } = await setup("A");
+  assert.throws(() => b.conversation.newChat("custom", tripId, "Empty"), /needs instructions/);
+  const chat = b.conversation.newChat("custom", tripId, "Food finder", { instructions: "Suggest pure-veg places under ₹300", groups: ["maps", "plans", "bogus"] });
+  assert.deepEqual(chat.custom?.groups, ["maps", "plans"], "unknown groups dropped");
+  script = [{ text: "Sure." }];
+  await b.conversation.send(chat.chatId, "find me lunch");
+  const req = seen.at(-1);
+  const names = req.tools.map((t: any) => t.function.name);
+  assert.ok(names.includes("nearby_places") && names.includes("add_activity") && names.includes("remember"));
+  assert.ok(!names.includes("report_disruption") && !names.includes("add_expense") && !names.includes("approve_pending"));
+  assert.match(req.messages[0].content, /pure-veg places under ₹300/);
+  assert.equal(b.chats.get(chat.chatId)?.title, "Food finder", "custom title kept after first message");
+  noModel();
+  b.shutdown();
+});
+
+test("Delhivery is ornamental: active, but returns empty results without a key", async () => {
+  const { DelhiveryOrnamental } = await import("../../services/integrations/delhivery");
+  const d = new DelhiveryOrnamental();
+  assert.equal(d.status().active, true);
+  assert.deepEqual((await d.geocode("Pune")).results, []);
+  assert.deepEqual((await d.route({}, {})).routes, []);
+});
+
+test("General messages are auto-filed into the matching function chat (created if missing)", async () => {
+  await withModel();
+  const { b, tripId } = await setup("A");
+  const general = b.conversation.newChat("general", tripId);
+  script = [{ tool: "add_expense", args: { description: "dinner", amount: 1200, paid_by: "Me", split_among: ["Me", "Rahul"] } }, { text: "Rahul owes you ₹600." }];
+  const r = await b.conversation.send(general.chatId, "I paid 1200 for dinner with Rahul");
+  assert.equal(r.copiedTo.length, 1);
+  assert.equal(r.copiedTo[0].mode, "splitwise");
+  const target = b.chats.messages(r.copiedTo[0].chatId);
+  assert.deepEqual(target.map((m) => [m.role, m.copiedFrom]), [["user", general.chatId], ["assistant", general.chatId]]);
+  // Second expense reuses the same split chat instead of creating another.
+  script = [{ tool: "add_expense", args: { description: "taxi", amount: 300, paid_by: "Rahul", split_among: ["Me", "Rahul"] } }, { text: "Noted." }];
+  const r2 = await b.conversation.send(general.chatId, "Rahul paid 300 for the taxi");
+  assert.equal(r2.copiedTo[0].chatId, r.copiedTo[0].chatId);
+  // A translation request with no tools is filed by keyword; plain chit-chat is not filed.
+  script = [{ text: "पानी" }];
+  assert.equal((await b.conversation.send(general.chatId, "how do you say water in hindi?")).copiedTo[0].mode, "translate");
+  script = [{ text: "Hello!" }];
+  assert.equal((await b.conversation.send(general.chatId, "hi")).copiedTo.length, 0);
+  // Function chats never re-file.
+  script = [{ tool: "get_balances" }, { text: "ok" }];
+  assert.equal((await b.conversation.send(r.copiedTo[0].chatId, "balances?")).copiedTo.length, 0);
+  noModel();
+  b.shutdown();
+});
+
+test("/recall answers from the memory graph instantly, without calling the model", async () => {
+  await withModel();
+  const { b, tripId } = await setup("A");
+  b.memory.remember({ subject: "Rahul", subject_type: "person", relation: "allergic to", object: "peanuts", object_type: "fact" }, "t");
+  const chat = b.conversation.newChat("budget", tripId);
+  const before = seen.length;
+  const r = await b.conversation.send(chat.chatId, "/recall rahul");
+  assert.equal(seen.length, before, "no model request");
+  assert.equal(r.source, "MEMORY");
+  assert.match(r.message.text, /Rahul allergic to peanuts/);
+  assert.match((await b.conversation.send(chat.chatId, "/recall nobody")).message.text, /Nothing in memory/);
+  assert.equal(b.memory.search("peanut")[0].label, "peanuts");
+  noModel();
+  b.shutdown();
+});
+
+test("/btw side questions are answered but leave no trace: no history, no memory, read-only tools", async () => {
+  await withModel();
+  const { b, tripId } = await setup("A");
+  const chat = b.conversation.newChat("general", tripId);
+  const nodesBefore = b.memory.nodes().length;
+  // Even if the model tries to write memory, the tool isn't offered and would be refused.
+  script = [{ tool: "remember", args: { facts: [{ subject: "Me", relation: "likes", object: "garbage" }] } }, { text: "Probably 30°C." }];
+  const r = await b.conversation.send(chat.chatId, "/btw how hot is Goa in October?");
+  assert.equal(r.ephemeral, true);
+  assert.match(r.message.text, /30°C/);
+  assert.equal(b.chats.messages(chat.chatId).length, 0, "nothing persisted");
+  assert.equal(b.memory.nodes().length, nodesBefore, "memory untouched");
+  assert.equal(r.copiedTo.length, 0);
+  const offered = seen.at(-2).tools.map((t: any) => t.function.name);
+  for (const w of ["remember", "add_expense", "add_activity", "report_disruption", "approve_pending", "calendar_add_event"]) assert.ok(!offered.includes(w), `${w} not offered`);
+  assert.ok(offered.includes("get_trip_status"));
+  noModel();
+  b.shutdown();
+});
+
+test("memory rejects junk facts and /forget removes things", async () => {
+  const m = new MemoryGraph(new Store());
+  assert.equal((m.remember({ subject: "it", relation: "is", object: "something" }, "c") as any).reason, "too vague");
+  assert.ok((m.remember({ subject: "Me", relation: "said", object: "x".repeat(200) }, "c") as any).reason);
+  assert.equal(m.nodes().length, 0);
+  const { b, tripId } = await setup("A");
+  b.memory.remember({ subject: "Me", subject_type: "traveller", relation: "prefers", object: "window seat", object_type: "preference" }, "t");
+  const chat = b.conversation.newChat("general", tripId);
+  assert.match((await b.conversation.send(chat.chatId, "/forget window seat")).message.text, /Forgotten: window seat/);
+  assert.equal(b.memory.search("window").length, 0);
+  assert.equal(b.memory.links().length, 0, "links removed with the node");
+  b.shutdown();
+});

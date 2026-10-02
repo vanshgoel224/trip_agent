@@ -6,7 +6,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBiruni } from "../../../services/runtime";
 import { SCENARIOS, createCustomTrip, seedScenario, type ScenarioName } from "../../../services/integrations/scenarios";
-import { CHAT_MODES, type ChatMode } from "../../../services/orchestrator/chats";
+import { CHAT_MODES, TOOL_GROUPS, type ChatMode } from "../../../services/orchestrator/chats";
 import { LANGUAGES } from "../../../services/conversation";
 import { audioCache } from "../../../services/agents/voice";
 import { GoogleCalendar } from "../../../services/integrations/google-calendar";
@@ -90,9 +90,11 @@ route("POST", "/api/trips/quick", async (_r, body) => {
 // ---------- chats ----------
 route("GET", "/api/chat-modes", () => Object.entries(CHAT_MODES).map(([mode, m]) => ({ mode, label: m.label, icon: m.icon })));
 route("GET", "/api/chats", () => b.chats.list());
+route("GET", "/api/tool-groups", () => Object.entries(TOOL_GROUPS).map(([id, g]) => ({ id, label: g.label })));
+route("POST", "/api/chats/:chatId/rename", (_r, body, p) => b.chats.update(p.chatId, { title: String(body.title ?? "") }));
 route("POST", "/api/chats", (_r, body) => {
   if (!(body.mode in CHAT_MODES)) throw new BiruniError("INVALID_REQUEST", "unknown chat mode");
-  return b.conversation.newChat(body.mode as ChatMode, body.tripId || undefined, body.title);
+  return b.conversation.newChat(body.mode as ChatMode, body.tripId || undefined, body.title, body.custom);
 });
 route("GET", "/api/chats/:chatId", (_r, _b, p) => {
   const chat = b.chats.get(p.chatId);
@@ -106,6 +108,7 @@ route("POST", "/api/chats/:chatId/delete", (_r, _b, p) => (b.chats.remove(p.chat
 // ---------- memory graph (graphify format) ----------
 route("GET", "/api/memory/graph", () => b.memory.exportGraphify());
 route("GET", "/api/memory/report", () => ({ markdown: b.memory.report() }));
+route("GET", "/api/memory/recall", (_r, _b, _p, url) => b.memory.search(url.searchParams.get("q") ?? ""));
 route("POST", "/api/memory/export", async () => {
   const dir = process.env.MEMORY_OUT_DIR || "memory-out";
   await mkdir(dir, { recursive: true });
@@ -149,7 +152,8 @@ route("GET", "/api/connections", () => {
     reddit: { configured: redditConfigured(), note: redditConfigured() ? "OAuth app" : "anonymous (often blocked from cloud IPs)" },
     youtube: { configured: youtubeConfigured() },
     splitwise: { configured: splitwiseConfigured() },
-    maps: { provider: "OpenStreetMap (Nominatim, Overpass, OSRM)", configured: true },
+    maps: { provider: "OpenStreetMap data · MapLibre map · Nominatim, Overpass, OSRM", configured: true },
+    voice: { mode: b.voice.live ? "Gnani" : "Device built-in voices (browser speech)" },
     mcpServers: b.mcpClients.list(),
   };
 });

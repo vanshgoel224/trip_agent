@@ -4,7 +4,7 @@
 import type { Store } from "../packages/db";
 import type { Orchestrator } from "./orchestrator";
 import type { ChatAgent } from "./orchestrator/chat-agent";
-import type { Chats, ChatMode } from "./orchestrator/chats";
+import type { Chats, ChatMode, CustomSpec } from "./orchestrator/chats";
 import type { MemoryGraph } from "./memory";
 import type { VoiceAgent } from "./agents/voice";
 import { chat as modelChat, geminiStrongModel, resolveEndpoint, type ModelRouter } from "./models";
@@ -45,11 +45,33 @@ export function scriptScore(text: string, code: string): number {
 
 type Deps = { store: Store; orchestrator: Orchestrator; chats: Chats; chatAgent: ChatAgent; memory: MemoryGraph; voice: VoiceAgent; models: ModelRouter };
 
+// Which function-chat a General message belongs to, by the tools it used.
+const TOOL_HOME: Record<string, ChatMode> = {
+  add_expense: "splitwise", list_expenses: "splitwise", get_balances: "splitwise", settle_up: "splitwise", remove_expense: "splitwise", splitwise_groups: "splitwise", splitwise_push: "splitwise",
+  report_disruption: "recovery", approve_pending: "recovery", decline_pending: "recovery", undo_last_action: "recovery", mark_verified_way_home: "recovery", search_alternative_routes: "recovery",
+  where_am_i: "maps", find_place: "maps", nearby_places: "maps", directions: "maps",
+  discover_places: "discover",
+  calendar_list_events: "calendar", calendar_add_event: "calendar", add_activity: "calendar", update_activity: "calendar", remove_activity: "calendar",
+  get_budget: "budget",
+};
+const TRANSLATE_RE = /\b(translate|translation|anuvad|in (hindi|tamil|telugu|kannada|malayalam|marathi|gujarati|punjabi|bengali|odia|urdu|assamese|konkani|english))\b|\b(kaise bolte|ko .* mein kya kehte)\b/i;
+
+/** Function chats a General exchange should also be filed under. */
+export function routeTargets(text: string, tools: string[]): ChatMode[] {
+  const modes = new Set<ChatMode>();
+  for (const t of tools) {
+    const m = TOOL_HOME[t.replace(/\(.*$/, "")];
+    if (m) modes.add(m);
+  }
+  if (TRANSLATE_RE.test(text)) modes.add("translate");
+  return [...modes];
+}
+
 export class Conversation {
   constructor(private d: Deps) {}
 
-  newChat(mode: ChatMode, tripId?: string, title?: string) {
-    const c = this.d.chats.create(mode, tripId, title);
+  newChat(mode: ChatMode, tripId?: string, title?: string, custom?: CustomSpec) {
+    const c = this.d.chats.create(mode, tripId, title, custom);
     this.d.memory.upsertNode("chat", `${c.title} (${c.chatId})`, c.chatId, { mode });
     return c;
   }
@@ -59,7 +81,35 @@ export class Conversation {
     if (!chat) throw new Error("unknown chat");
     const clean = text.trim().slice(0, 4000);
     if (!clean) throw new Error("empty message");
+    // /btw: side question, answered but never stored (no history, no memory, no auto-filing, read-only tools).
+    const btw = clean.match(/^\/btw\s+([\s\S]+)/i);
+    if (btw) {
+      const q = btw[1].trim();
+      const out = (await this.d.chatAgent.respond(chat, q, undefined, { ephemeral: true })) ?? { reply: "My language model isn't connected, so I can't answer side questions right now.", source: "RULES", tools: [] };
+      const message = { messageId: "EPHEMERAL", chatId, role: "assistant" as const, text: out.reply, at: new Date().toISOString(), source: `btw · not saved · ${out.source}`, tools: out.tools };
+      return { chat, message, tools: out.tools, source: out.source, copiedTo: [], ephemeral: true };
+    }
+
     this.d.chats.add(chatId, { role: "user", text: clean });
+
+    const forget = clean.match(/^\/forget\s+(.+)/i);
+    if (forget) {
+      const gone = this.d.memory.forget(forget[1]);
+      const msg = this.d.chats.add(chatId, { role: "assistant", text: gone.length ? `Forgotten: ${gone.join(", ")}.` : `Nothing in memory matched "${forget[1]}".`, source: "MEMORY" });
+      return { chat: this.d.chats.get(chatId), message: msg, tools: ["forget"], source: "MEMORY", copiedTo: [] };
+    }
+
+    // Quick recall: answered straight from the memory graph, no model call.
+    const recall = clean.match(/^\/(recall|memory|yaad)\s+(.+)/i);
+    if (recall) {
+      const hits = this.d.memory.search(recall[2]);
+      const reply = hits.length
+        ? hits.slice(0, 6).map((h) => `• ${h.label} (${h.type})${h.facts.length ? ": " + h.facts.slice(0, 5).join("; ") : ""}`).join("\n")
+        : `Nothing in memory about "${recall[2]}" yet.`;
+      const msg = this.d.chats.add(chatId, { role: "assistant", text: reply, source: "MEMORY" });
+      return { chat: this.d.chats.get(chatId), message: msg, tools: ["quick_recall"], source: "MEMORY", copiedTo: [] };
+    }
+
     const hint = chat.mode === "translate" && hints.targetLanguage
       ? `Translator settings from the app: source ${hints.sourceLanguage && hints.sourceLanguage !== "auto" ? langName(hints.sourceLanguage) : "auto-detect"}, target ${langName(hints.targetLanguage)} (use this target unless the latest message names another language).`
       : undefined;
@@ -74,7 +124,18 @@ export class Conversation {
       }
     }
     const msg = this.d.chats.add(chatId, { role: "assistant", text: out.reply, source: out.source, tools: out.tools });
-    return { chat: this.d.chats.get(chatId), message: msg, tools: out.tools, source: out.source };
+
+    // Auto-file General messages into the matching function chat (created if needed).
+    const copiedTo: { chatId: string; mode: ChatMode; title: string }[] = [];
+    if (chat.mode === "general") {
+      for (const mode of routeTargets(clean, out.tools)) {
+        const target = this.d.chats.findLatest(mode, chat.tripId) ?? this.newChat(mode, chat.tripId);
+        this.d.chats.add(target.chatId, { role: "user", text: clean, copiedFrom: chatId });
+        this.d.chats.add(target.chatId, { role: "assistant", text: out.reply, source: out.source, tools: out.tools, copiedFrom: chatId });
+        copiedTo.push({ chatId: target.chatId, mode, title: this.d.chats.get(target.chatId)!.title });
+      }
+    }
+    return { chat: this.d.chats.get(chatId), message: msg, tools: out.tools, source: out.source, copiedTo };
   }
 
   /** Text translation between any two languages via the LLM, with a script sanity check. */

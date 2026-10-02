@@ -18,7 +18,7 @@ import type { ExpenseAgent } from "../agents/expenses";
 import { splitwiseConfigured, splitwiseGroups, splitwisePush } from "../agents/expenses";
 import type { MemoryGraph, NodeType } from "../memory";
 import type { VoiceAgent } from "../agents/voice";
-import { CHAT_MODES, type Chat, type Chats } from "./chats";
+import { chatProfile, type Chat, type Chats } from "./chats";
 import { directions, findPlace, nearby, NEARBY_KINDS, reverseGeocode, type LatLng } from "../integrations/openstreetmap";
 import type { McpConnections } from "../mcp-client";
 import type { Devices } from "../devices";
@@ -26,6 +26,11 @@ import { getRuntime } from "./authority";
 import type { Orchestrator } from "./index";
 
 const MAX_STEPS = 6;
+/** Tools allowed for /btw side questions: read-only, so nothing is stored or changed. */
+export const READ_ONLY_TOOLS = new Set([
+  "get_trip_status", "recall_memory", "get_budget", "list_expenses", "get_balances", "search_alternative_routes",
+  "where_am_i", "find_place", "nearby_places", "directions", "discover_places", "calendar_list_events",
+]);
 const APPROVAL_WORDS = /\b(yes|yeah|yep|haan|ha|han|ji|approve|approved|go ahead|book it|do it|ok|okay|theek|thik|kar do|karo|confirm|sure)\b/i;
 
 const fn = (name: string, description: string, properties: Record<string, unknown> = {}, required: string[] = []): ToolSpec => ({
@@ -103,7 +108,7 @@ export class ChatAgent {
   }
 
   private systemPrompt(chat: Chat, trip: TripState | undefined, inc: Incident | undefined, memory: string[]) {
-    const mode = CHAT_MODES[chat.mode];
+    const mode = chatProfile(chat);
     const loc = this.d.devices.latest(chat.tripId);
     const locLine = loc ? ` Traveller's live GPS: ${loc.lat.toFixed(5)},${loc.lng.toFixed(5)} (±${Math.round(loc.accuracy ?? 0)} m, ${loc.at.slice(11, 16)} UTC).` : " No live location shared yet.";
     const tripLine = trip
@@ -124,7 +129,7 @@ Rules:
 - Reply in the traveller's language and style (English, Hindi or Hinglish) unless this chat says otherwise. Be short and speakable; plain text, no tables.`;
   }
 
-  async respond(chat: Chat, text: string, hint?: string): Promise<{ reply: string; source: string; tools: string[] } | undefined> {
+  async respond(chat: Chat, text: string, hint?: string, opts: { ephemeral?: boolean } = {}): Promise<{ reply: string; source: string; tools: string[] } | undefined> {
     const tripId = chat.tripId;
     const online = tripId ? getRuntime(this.d.store, tripId).online : true;
     let ep;
@@ -155,8 +160,13 @@ Rules:
       .messages(chat.chatId)
       .slice(chat.mode === "translate" ? -5 : -13, -1)
       .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text }));
-    const allowed = new Set(CHAT_MODES[chat.mode].tools);
-    const external = chat.mode === "general" ? this.d.mcpClients.toolSpecs() : [];
+    const allowed = new Set(chatProfile(chat).tools);
+    if (opts.ephemeral) {
+      // /btw: read-only side question. Any tool that writes (memory, expenses, plans, bookings) is removed.
+      for (const t of [...allowed]) if (!READ_ONLY_TOOLS.has(t)) allowed.delete(t);
+      notes.push("This is a /btw side question: answer it briefly. It will not be saved, so do not offer to remember or record anything.");
+    }
+    const external = chat.mode === "general" && !opts.ephemeral ? this.d.mcpClients.toolSpecs() : [];
     for (const t of external) allowed.add(t.function.name);
     const tools = [...CHAT_TOOLS.filter((t) => allowed.has(t.function.name)), ...external];
     const messages: ChatMessage[] = [

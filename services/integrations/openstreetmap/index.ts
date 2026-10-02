@@ -49,17 +49,20 @@ const KINDS: Record<string, [string, string]> = {
   railway_station: ["railway", "station"], hotel: ["tourism", "hotel"], hostel: ["tourism", "hostel"], attraction: ["tourism", "attraction"],
   viewpoint: ["tourism", "viewpoint"], temple: ["amenity", "place_of_worship"], supermarket: ["shop", "supermarket"],
 };
-export const NEARBY_KINDS = Object.keys(KINDS);
+export const NEARBY_KINDS = [...Object.keys(KINDS), "vegetarian"];
 
 export async function nearby(kind: string, at: LatLng, radiusM = 1500, limit = 8): Promise<{ source: string; places: Place[] }> {
-  const tag = KINDS[kind] ?? ["amenity", kind];
+  const veg = kind === "vegetarian";
+  const tag = veg ? (["amenity", "restaurant"] as [string, string]) : KINDS[kind] ?? ["amenity", kind];
   try {
-    const q = `[out:json][timeout:15];nwr["${tag[0]}"="${tag[1]}"](around:${radiusM},${at.lat},${at.lng});out center ${limit * 2};`;
+    // Vegetarian: OSM's diet:vegetarian=yes|only tag on restaurants, cafes and fast food.
+    const filter = veg ? `["amenity"~"^(restaurant|cafe|fast_food)$"]["diet:vegetarian"~"^(yes|only)$"]` : `["${tag[0]}"="${tag[1]}"]`;
+    const q = `[out:json][timeout:15];nwr${filter}(around:${radiusM},${at.lat},${at.lng});out center ${limit * 2};`;
     const res = await fetch(OVERPASS, { method: "POST", headers: { "user-agent": UA, "content-type": "application/x-www-form-urlencoded" }, body: `data=${encodeURIComponent(q)}`, signal: AbortSignal.timeout(18_000) });
     if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
     const j = (await res.json()) as { elements: any[] };
     const places = j.elements
-      .map((e) => ({ name: e.tags?.name ?? kind, lat: e.lat ?? e.center?.lat, lng: e.lon ?? e.center?.lon, kind, osm: `${e.type}/${e.id}`, address: [e.tags?.["addr:street"], e.tags?.["addr:city"]].filter(Boolean).join(", ") || undefined }))
+      .map((e) => ({ name: e.tags?.name ?? kind, lat: e.lat ?? e.center?.lat, lng: e.lon ?? e.center?.lon, kind: veg ? `vegetarian (${e.tags?.["diet:vegetarian"]})` : kind, osm: `${e.type}/${e.id}`, address: [e.tags?.["addr:street"], e.tags?.["addr:city"]].filter(Boolean).join(", ") || undefined }))
       .filter((p) => p.lat)
       .map((p) => ({ ...p, distanceM: distanceM(at, p) }))
       .sort((a, b) => a.distanceM - b.distanceM)
@@ -68,11 +71,11 @@ export async function nearby(kind: string, at: LatLng, radiusM = 1500, limit = 8
   } catch {
     // Fallback: Nominatim bounded search around the point.
     const d = radiusM / 111_000;
-    const j = (await nominatim(`/search?q=${encodeURIComponent(tag[1].replace("_", " "))}&format=jsonv2&limit=${limit}&bounded=1&viewbox=${at.lng - d},${at.lat + d},${at.lng + d},${at.lat - d}`)) as any[];
+    const j = (await nominatim(`/search?q=${encodeURIComponent(veg ? "vegetarian restaurant" : tag[1].replace("_", " "))}&format=jsonv2&limit=${limit}&bounded=1&viewbox=${at.lng - d},${at.lat + d},${at.lng + d},${at.lat - d}`)) as any[];
     const places = j.map((x) => ({ name: x.name || tag[1], lat: +x.lat, lng: +x.lon, kind, address: x.display_name, osm: `${x.osm_type}/${x.osm_id}` }))
       .map((p) => ({ ...p, distanceM: distanceM(at, p) }))
       .sort((a, b) => a.distanceM - b.distanceM);
-    return { source: "nominatim", places };
+    return { source: "nominatim", places, ...(veg ? { note: "Fallback search by name only: vegetarian status not verified from OSM tags" } : {}) };
   }
 }
 
