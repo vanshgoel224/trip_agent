@@ -16,7 +16,8 @@
 //   whatsapp — WhatsApp Business Cloud API (WHATSAPP_TOKEN + WHATSAPP_PHONE_NUMBER_ID).
 //              Free-form text only within 24 h of the other person messaging you;
 //              cold outreach needs an approved template (WHATSAPP_TEMPLATE).
-//   sms/call — need a telephony provider (Exotel/Twilio/Gnani voice bot): not connected.
+//   sms/call — Exotel (services/telephony): SMS, and live calls with Gnani speech; simulated without keys.
+import type { Telephony } from "../telephony";
 import type { Store } from "../../packages/db";
 import { id, inr, nowIso } from "../../packages/shared";
 import { bus } from "../../packages/events";
@@ -111,16 +112,19 @@ const LANG_NAMES: Record<string, string> = {
   "bn-IN": "Bengali", "gu-IN": "Gujarati", "pa-IN": "Punjabi", "or-IN": "Odia", "kok-IN": "Konkani", "ur-IN": "Urdu", "as-IN": "Assamese",
 };
 
+// Every template is built up front, so a missing price must not throw (ASK_PRICE/WALK_AWAY have none).
+const money = (n?: number) => (typeof n === "number" && Number.isFinite(n) ? inr(n) : "");
+
 /** Template lines (Hindi / English) when no model is reachable. */
 function templateLine(action: Action, d: Deal, price?: number): { text: string; translation: string } {
   const what = d.kind === "hotel" ? `room (${d.goal})` : `ride (${d.goal})`;
   const en: Record<Action, string> = {
-    OPEN: `Hello ${d.counterparty.name}, I'm calling for ${d.travellerName}. We need a ${what}. Can you do it for ${inr(price!)}?`,
-    COUNTER: `That's a bit high. Can you do ${inr(price!)}?`,
-    ACCEPT: `Okay, ${inr(price!)} is fine. Done.`,
+    OPEN: `Hello ${d.counterparty.name}, I'm calling for ${d.travellerName}. We need a ${what}. Can you do it for ${money(price)}?`,
+    COUNTER: `That's a bit high. Can you do ${money(price)}?`,
+    ACCEPT: `Okay, ${money(price)} is fine. Done.`,
     ASK_PRICE: `How much will it be for the ${what}?`,
     WALK_AWAY: `Sorry, that's above our budget. Thank you for your time.`,
-    CONFIRM_DETAILS: `To confirm: ${what}, ${Object.entries(d.details).map(([k, v]) => `${k}: ${v}`).join(", ")}, for ${inr(price!)}, name ${d.travellerName}. Please confirm.`,
+    CONFIRM_DETAILS: `To confirm: ${what}, ${Object.entries(d.details).map(([k, v]) => `${k}: ${v}`).join(", ")}, for ${money(price)}, name ${d.travellerName}. Please confirm.`,
     THANKS: `Thank you, it's confirmed.`,
   };
   const hi: Record<Action, string> = {
@@ -251,6 +255,15 @@ export class Negotiator {
   }
 
   /** Inbound WhatsApp message → matching open deal by phone. */
+  /** Set by the runtime: Exotel SMS and calls. */
+  telephony?: Telephony;
+
+  async inboundSms(from: string, text: string) {
+    const digits = String(from).replace(/\D/g, "").slice(-10);
+    const d = this.list().find((x) => x.channel === "sms" && x.counterparty.phone?.replace(/\D/g, "").endsWith(digits) && ["NEGOTIATING", "AGREED"].includes(x.status));
+    return d ? this.counterpartySaid(d.dealId, String(text).slice(0, 2000)) : undefined;
+  }
+
   async inboundWhatsApp(from: string, text: string) {
     const digits = from.replace(/\D/g, "").slice(-10);
     const d = this.list().find((x) => x.channel === "whatsapp" && x.counterparty.phone?.replace(/\D/g, "").endsWith(digits) && ["NEGOTIATING", "AGREED"].includes(x.status));
@@ -328,6 +341,13 @@ Return ONLY JSON: {"text": "<in ${LANG_NAMES[d.counterparty.language]} script>",
       if (!res.ok) throw new Error(`WhatsApp HTTP ${res.status}: ${(await res.text()).slice(0, 160)}`);
       return "whatsapp: sent";
     }
-    throw new Error(`${d.channel} needs a telephony provider (e.g. Exotel, Twilio or a Gnani voice bot): not connected`);
+    if (!this.telephony) throw new Error(`${d.channel} needs telephony (Exotel): not wired`);
+    if (d.channel === "sms") {
+      if (!d.counterparty.phone) throw new Error("no phone number");
+      return this.telephony.sendSms(d.counterparty.phone, t.text);
+    }
+    // call: the first line rings them; later lines are spoken on the live call by the stream handler.
+    if (!d.transcript.some((x) => x.from === "biruni")) return this.telephony.call(d);
+    return "call: spoken on the live line";
   }
 }

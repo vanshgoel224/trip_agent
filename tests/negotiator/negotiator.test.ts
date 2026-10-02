@@ -49,10 +49,12 @@ test("hotel deal in Tamil over relay: haggle → agree → confirm → recorded 
   b.shutdown();
 });
 
-test("deal safety: no max → refused; sms/call report not connected instead of pretending", async () => {
+test("deal safety: no max → refused; calls without a number or Exotel keys say so instead of pretending", async () => {
   const { b, tripId } = await setup("A");
   await assert.rejects(b.negotiator.start({ tripId, kind: "auto", counterpartyName: "Raju", language: "hi-IN", goal: "x", travellerName: "V", target: 300, max: 0 }), /maximum/);
   const r = await b.negotiator.start({ tripId, kind: "auto", counterpartyName: "Raju", language: "hi-IN", goal: "Baga to Panjim", travellerName: "V", target: 300, max: 400, channel: "call" });
-  assert.match(r.line.sent!, /telephony provider/);
+  assert.match(r.line.sent!, /not sent: No phone number/);
+  const r2 = await b.negotiator.start({ tripId, kind: "taxi", counterpartyName: "Raju", counterpartyPhone: "9876543210", language: "hi-IN", goal: "Baga to Panjim", travellerName: "V", target: 300, max: 400, channel: "call" });
+  assert.match(r2.line.sent!, /simulated \(no Exotel/);
   b.shutdown();
 });

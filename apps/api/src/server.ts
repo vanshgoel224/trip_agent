@@ -20,6 +20,8 @@ import { chat as modelChat, GENERIC_SYSTEM, endpointChain, listModels, onlineEnd
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Vault, type Cipher } from "../../../packages/db/vault";
 import { authorized, handleRemoteMcp, remoteMcpEnabled } from "../../../services/mcp/remote";
+import { WebSocketServer } from "ws";
+import { Telephony } from "../../../services/telephony";
 import type { Biruni } from "../../../services/runtime";
 import { mkdir, writeFile } from "node:fs/promises";
 import { bus, type BiruniEvent } from "../../../packages/events";
@@ -238,6 +240,7 @@ route("GET", "/api/connections", () => {
     rails: { ...providerStatus(b.providers), delhivery: b.delhivery.status() },
     travel: b.partners.status(),
     operatorFeed: b.feed.status(),
+    telephony: b.telephony.status(),
     calendar: calendar.status(),
     reddit: { configured: redditConfigured(), note: redditConfigured() ? "OAuth app" : "anonymous (often blocked from cloud IPs)" },
     youtube: { configured: youtubeConfigured() },
@@ -420,6 +423,26 @@ const server = createServer(async (req, res) => {
       const r = b.feed.ingestMessage(tripId, String(body.text ?? body.message ?? ""));
       return send(res, 200, { ...r, decisions: r.recognised && "event" in r ? await b.autopilot.tick(tripId) : [] });
     }
+    // ---- Exotel inbound SMS (secret in the path; Exotel can't sign requests) ----
+    const smsHook = url.pathname.match(/^\/telephony\/exotel\/sms\/([^/]+)$/);
+    if (smsHook) {
+      const secret = process.env.TELEPHONY_WS_SECRET ?? "";
+      if (secret.length < 24 || smsHook[1].length !== secret.length || !timingSafeEqual(Buffer.from(smsHook[1]), Buffer.from(secret))) return send(res, 404, { error: "not found" });
+      if (!unlocked) return send(res, 503, { error: { code: "LOCKED", message: "Biruni is locked" } });
+      let p: Record<string, string> = Object.fromEntries(url.searchParams);
+      if (req.method === "POST") {
+        let raw = "";
+        for await (const c of req) if ((raw += c).length > 100_000) break;
+        try {
+          p = { ...p, ...(raw.trim().startsWith("{") ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))) };
+        } catch {
+          /* keep query params */
+        }
+      }
+      const from = p.From ?? p.from ?? "", text = p.Body ?? p.body ?? p.Content ?? p.text ?? "";
+      const r = from && text ? await b.negotiator.inboundSms(from, text) : undefined;
+      return send(res, 200, { ok: true, matchedDeal: !!r });
+    }
     // ---- remote MCP (Streamable HTTP) ----
     if (url.pathname === "/mcp") {
       if (!remoteMcpEnabled()) return send(res, 404, { error: { code: "INVALID_REQUEST", message: "Remote MCP is off: set BIRUNI_MCP_TOKEN (24+ chars)" } });
@@ -493,6 +516,14 @@ if (!vault.configured && process.env.BIRUNI_INITIAL_PIN) {
 
 server.listen(config.port, () => {
   console.log(`Biruni on http://localhost:${config.port}  (providers: ${config.providerMode}, db: ${config.dbPath}) — ${vault.configured ? "LOCKED: open the app and enter your PIN" : "first run: open the app to set a PIN"}`);
+});
+
+// Exotel media stream (WebSocket). Only the secret path upgrades; anything else is dropped.
+const wss = new WebSocketServer({ noServer: true, maxPayload: 1_000_000 });
+server.on("upgrade", (req, socket, head) => {
+  socket.on("error", () => {});
+  if (!unlocked || !Telephony.streamAuthorized(req)) return void socket.destroy();
+  wss.handleUpgrade(req, socket, head, (ws) => b.telephony.handleStream(ws));
 });
 
 // Last line of defence: log and keep serving. One bad request or a flaky upstream
