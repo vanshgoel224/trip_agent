@@ -10,5 +10,5 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["apps/api", "services", "packages", "tests"]
+  "include": ["apps/api", "services", "packages", "tests", "scripts"]
 }

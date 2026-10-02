@@ -1,3 +1,7 @@
+// Tests run on the deterministic rules path: never call real models.
+delete process.env.ONLINE_MODEL_API_KEY;
+process.env.OFFLINE_MODEL_CONFIG = "off";
+
 import { createBiruni, type Biruni } from "../../services/runtime";
 import { seedScenario, type ScenarioName } from "../../services/integrations/scenarios";
 import type { MockPaymentProvider } from "../../services/integrations/pine-labs";

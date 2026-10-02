@@ -114,3 +114,10 @@ test("traveller with a verified way home stops recovery", async () => {
   assert.equal(payments.chargeCalls, 0);
   b.shutdown();
 });
+
+test("model reply parsing ignores <think> blocks and surrounding prose", async () => {
+  const { extractJson } = await import("../../services/models");
+  assert.deepEqual(extractJson('<think>maybe {"intent":"OTHER"}?</think>Sure: {"intent":"UNDO"} done'), { intent: "UNDO" });
+  assert.deepEqual(extractJson('{"intent":"REPORT_DISRUPTION","disruptionClass":"SAFETY"}'), { intent: "REPORT_DISRUPTION", disruptionClass: "SAFETY" });
+  assert.throws(() => extractJson("no json here"));
+});

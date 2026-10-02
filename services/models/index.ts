@@ -16,17 +16,27 @@ export type Proposal = z.infer<typeof ProposalSchema> & { source: "ONLINE_MODEL"
 
 type Endpoint = { baseUrl: string; apiKey?: string; model: string };
 
-function onlineEndpoint(): Endpoint | undefined {
-  const baseUrl = process.env.ONLINE_MODEL_BASE_URL;
-  const model = process.env.ONLINE_MODEL_NAME;
-  if (!baseUrl || !model) return undefined;
-  return { baseUrl, apiKey: process.env.ONLINE_MODEL_API_KEY, model };
+// Defaults: Nemotron Ultra on NVIDIA's hosted API (enabled once ONLINE_MODEL_API_KEY
+// is set), Qwen on a local Ollama server (its OpenAI-compatible /v1 endpoint).
+export const DEFAULT_ONLINE = { baseUrl: "https://integrate.api.nvidia.com/v1", model: "nvidia/nemotron-3-ultra-550b-a55b" };
+export const DEFAULT_OFFLINE = { baseUrl: "http://localhost:11434/v1", model: "qwen3:4b" };
+
+export function onlineEndpoint(): Endpoint | undefined {
+  const apiKey = process.env.ONLINE_MODEL_API_KEY;
+  if (!apiKey) return undefined;
+  return {
+    baseUrl: process.env.ONLINE_MODEL_BASE_URL || DEFAULT_ONLINE.baseUrl,
+    model: process.env.ONLINE_MODEL_NAME || DEFAULT_ONLINE.model,
+    apiKey,
+  };
 }
 
-function offlineEndpoint(): Endpoint | undefined {
-  // OFFLINE_MODEL_CONFIG is JSON: {"baseUrl":"http://localhost:11434/v1","model":"<qwen tag>"}
+export function offlineEndpoint(): Endpoint | undefined {
+  // OFFLINE_MODEL_CONFIG is JSON: {"baseUrl":"http://localhost:11434/v1","model":"qwen3:4b"}
+  // Set it to "off" to skip the local model entirely.
   const raw = process.env.OFFLINE_MODEL_CONFIG;
-  if (!raw) return undefined;
+  if (raw === "off") return undefined;
+  if (!raw) return DEFAULT_OFFLINE;
   try {
     const c = JSON.parse(raw);
     return c.baseUrl && c.model ? c : undefined;
@@ -35,12 +45,26 @@ function offlineEndpoint(): Endpoint | undefined {
   }
 }
 
+/** Pull the JSON object out of a reply, ignoring any <think>…</think> reasoning block. */
+export function extractJson(raw: string): unknown {
+  const text = raw.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  const end = text.lastIndexOf("}");
+  for (let start = text.lastIndexOf("{", end); start >= 0; start = text.lastIndexOf("{", start - 1)) {
+    try {
+      return JSON.parse(text.slice(start, end + 1));
+    } catch {
+      /* widen to the previous "{" */
+    }
+  }
+  throw new Error("no JSON object in model reply");
+}
+
 const SYSTEM = `You classify a traveller's message for a travel-recovery agent.
 Return ONLY JSON: {"intent": one of REPORT_DISRUPTION|UNDO|APPROVE|DECLINE|STATUS|VERIFIED_WAY_HOME|OTHER,
 "disruptionClass": optional, one of SAFETY|ROUTE_BLOCKED|LOGISTICAL}.
 SAFETY = any risk to the person. ROUTE_BLOCKED = the route is physically blocked. LOGISTICAL = cancellations, delays, missed connections.`;
 
-async function chat(ep: Endpoint, user: string, timeoutMs: number): Promise<string> {
+export async function chat(ep: Endpoint, user: string, timeoutMs: number): Promise<string> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -48,9 +72,9 @@ async function chat(ep: Endpoint, user: string, timeoutMs: number): Promise<stri
       method: "POST",
       signal: ctrl.signal,
       headers: { "content-type": "application/json", ...(ep.apiKey ? { authorization: `Bearer ${ep.apiKey}` } : {}) },
-      body: JSON.stringify({ model: ep.model, temperature: 0, messages: [{ role: "system", content: SYSTEM }, { role: "user", content: user }] }),
+      body: JSON.stringify({ model: ep.model, temperature: 0, max_tokens: 512, messages: [{ role: "system", content: SYSTEM }, { role: "user", content: user }] }),
     });
-    if (!res.ok) throw new Error(`model HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`model HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const j = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     return j.choices?.[0]?.message?.content ?? "";
   } finally {
@@ -73,12 +97,15 @@ export function rulesProposal(text: string): Proposal {
 }
 
 export class ModelRouter {
-  constructor(private timeoutMs = Number(process.env.MODEL_TIMEOUT_MS ?? 4000)) {}
+  lastError?: string;
+
+  constructor(private timeoutMs = Number(process.env.MODEL_TIMEOUT_MS ?? 15000)) {}
 
   describe() {
     return {
       online: onlineEndpoint() ? { model: onlineEndpoint()!.model, role: "recovery planning, obligation inference, negotiation" } : "not configured (rules fallback)",
       offline: offlineEndpoint() ? { model: offlineEndpoint()!.model, role: "cache lookups, voice relay, notes, undo timer" } : "not configured (rules fallback)",
+      lastError: this.lastError ?? null,
     };
   }
 
@@ -87,11 +114,12 @@ export class ModelRouter {
     if (ep) {
       try {
         const raw = await chat(ep, text, this.timeoutMs);
-        const json = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
-        const p = ProposalSchema.parse(JSON.parse(json));
+        const p = ProposalSchema.parse(extractJson(raw));
+        this.lastError = undefined;
         return { ...p, source: online ? "ONLINE_MODEL" : "OFFLINE_MODEL" };
-      } catch {
-        // fall through to deterministic rules
+      } catch (e) {
+        // Fall through to deterministic rules; keep the reason visible in /api/health.
+        this.lastError = `${online ? "online" : "offline"}: ${e instanceof Error ? e.message : e}`;
       }
     }
     return rulesProposal(text);

@@ -15,6 +15,7 @@ npm install
 npm test          # 22 tests: authority, payments/obligations, idempotency, recovery, restart
 npm run demo      # CLI walkthrough of every scenario (short undo window)
 npm start         # API + demo UI on http://localhost:8787 (30s undo window)
+npm run models:check   # ping Nemotron (needs ONLINE_MODEL_API_KEY) and local Qwen/Ollama
 ```
 
 In the UI, pick a scenario, press **Send** to report the disruption, then watch the agent activity panel. **UNDO** is live for 30 seconds.
@@ -83,6 +84,14 @@ The six specialist names (finance, recovery, compliance, voice, travel, booking)
 
 All fares, balances and vendors are **simulated and fictional**. They aren't real market prices.
 
+## Models
+
+```bash
+export ONLINE_MODEL_API_KEY=nvapi-...      # NVIDIA key; never commit it
+ollama pull qwen3:4b && ollama serve       # on the phone/laptop, for the offline model
+npm run models:check
+```
+
 ## Implementation decisions the spec leaves open
 
 These are my calls. Review them before freeze.
@@ -97,7 +106,7 @@ These are my calls. Review them before freeze.
 ## What is not built
 
 - **Live rail adapters.** `PROVIDER_MODE=live` deliberately throws `not implemented`. I haven't verified the vendor endpoints and auth flows against current docs, and I won't guess them. Implement each one behind the existing interface in Phase 5. The tool contracts don't change.
-- **Model calls:** the code is there (an OpenAI-compatible client with a timeout and a rules fallback) but hasn't been tested against a real Nemotron or Qwen endpoint. Check the base URL and model id in your provider's docs.
+- **Models are wired but unverified with real keys.** Online is Nemotron Ultra (`nvidia/nemotron-3-ultra-550b-a55b`) on NVIDIA's API; it's active once `ONLINE_MODEL_API_KEY` is set. Offline is Qwen (`qwen3:4b`) on a local Ollama server. Check both with `npm run models:check`. The models only propose intent and disruption class; policy still decides. If a call fails or times out, Biruni falls back to the rules and shows the reason in `/api/health`.
 - **Qwen 4B on the phone:** not integrated. `apps/phone-offline/` is the earlier offline Python agent (Ollama, `qwen2.5:3b-instruct`). It's kept as the starting point for that layer. It is not the Qwen 4B the spec names.
 - **No user authentication on `/api`.** It's a demo; add JWT before exposing it anywhere.
 - **Group leader policy, Redis, Postgres runtime.** `prisma/schema.prisma` is valid, but the prototype runs on SQLite.

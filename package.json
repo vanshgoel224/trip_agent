@@ -8,7 +8,8 @@
     "mcp:stdio": "node --no-warnings=ExperimentalWarning --import tsx services/mcp/stdio.ts",
     "demo": "node --no-warnings=ExperimentalWarning --import tsx tests/scenarios/run-demo.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --no-warnings=ExperimentalWarning --import tsx --test \"tests/**/*.test.ts\""
+    "test": "node --no-warnings=ExperimentalWarning --import tsx --test \"tests/**/*.test.ts\"",
+    "models:check": "node --no-warnings=ExperimentalWarning --import tsx scripts/check-models.ts"
   },
   "repository": {
     "type": "git",
