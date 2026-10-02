@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Biruni</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>BIRUNI</h1>
+      <p class="tag">Getting you home safe</p>
+    </div>
+    <div class="controls">
+      <label class="toggle"><input type="checkbox" id="online" checked /> Online</label>
+      <label class="toggle"><input type="checkbox" id="speak" checked /> Speak readbacks</label>
+      <button id="battery" class="ghost" title="Simulate critical battery">Battery 4%</button>
+    </div>
+  </header>
+
+  <section class="scenarios" id="scenarios" aria-label="Demo scenarios"></section>
+
+  <main class="grid">
+    <section class="card" id="tripCard">
+      <h2>Trip status</h2>
+      <div id="tripLine" class="big muted">Pick a scenario to start</div>
+      <div id="tripMeta" class="muted small"></div>
+
+      <div id="disruption" class="alert hidden"></div>
+
+      <h2>Recovery</h2>
+      <ul id="checklist" class="checklist"></ul>
+
+      <div id="approval" class="approval hidden">
+        <p id="approvalText"></p>
+        <div class="row">
+          <button id="approve">Approve</button>
+          <button id="decline" class="ghost">Decline</button>
+        </div>
+      </div>
+
+      <dl id="result" class="result hidden">
+        <dt>New route</dt><dd id="newRoute"></dd>
+        <dt>Cost</dt><dd id="cost"></dd>
+        <dt>Remaining authority</dt><dd id="remaining"></dd>
+        <dt>Free balance after obligations</dt><dd id="free"></dd>
+      </dl>
+
+      <button id="undo" class="undo hidden">UNDO <span id="undoSecs"></span></button>
+
+      <h2>Itinerary</h2>
+      <ol id="itinerary" class="itinerary"></ol>
+    </section>
+
+    <section class="card">
+      <h2>Conversation</h2>
+      <div id="thread" class="thread" aria-live="polite"></div>
+      <form id="say" class="say">
+        <input id="text" autocomplete="off" placeholder='Try "My bus was cancelled", "undo", "yes", "status"' />
+        <button type="button" id="mic" class="ghost" title="Speak (browser speech recognition)">🎤</button>
+        <button type="submit">Send</button>
+      </form>
+      <p class="muted small">Voice: Gnani in production. In mock mode the browser's speech APIs stand in for Gnani audio.</p>
+    </section>
+
+    <section class="card">
+      <h2>Agent activity</h2>
+      <p class="muted small">Actions and statuses only — no model chain-of-thought.</p>
+      <ol id="activity" class="activity"></ol>
+    </section>
+  </main>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

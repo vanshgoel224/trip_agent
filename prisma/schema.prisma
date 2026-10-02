@@ -1,0 +1,262 @@
+// Production schema (spec §17). The prototype runs on node:sqlite with the same
+// table names (packages/db); migrate to this schema for a hosted deployment.
+// Invariant: only the finance service writes `obligations`, `authority_ledgers`
+// and `transactions` — enforce with a dedicated DB role in production.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                      String    @id
+  name                    String
+  age                     Int
+  phone                   String?
+  preferredLanguage       String    @default("en-IN")
+  dailyCeiling            Int
+  emergencyContactName    String?
+  emergencyContactPhone   String?
+  emergencyAutoAlertOptIn Boolean   @default(false)
+  createdAt               DateTime  @default(now())
+  trips                   Trip[]
+  consents                Consent[]
+
+  @@map("users")
+}
+
+model Trip {
+  id          String      @id
+  travellerId String
+  traveller   User        @relation(fields: [travellerId], references: [id])
+  status      String
+  origin      String
+  destination String
+  incidentId  String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  states      TripState[]
+  incidents   Incident[]
+  itineraries Itinerary[]
+
+  @@map("trips")
+}
+
+/// Runtime flags held by the orchestrator: L4 authority, connectivity, battery.
+model TripState {
+  id           String   @id @default(cuid())
+  tripId       String
+  trip         Trip     @relation(fields: [tripId], references: [id])
+  l4Active     Boolean  @default(false)
+  l4IncidentId String?
+  online       Boolean  @default(true)
+  batteryPct   Int?
+  updatedAt    DateTime @updatedAt
+
+  @@map("trip_states")
+}
+
+model Incident {
+  id                 String   @id
+  tripId             String
+  trip               Trip     @relation(fields: [tripId], references: [id])
+  description        String
+  affectedLegId      String?
+  classification     String? // SAFETY | ROUTE_BLOCKED | LOGISTICAL
+  step               String // recovery checkpoint
+  stopReason         String?
+  hasVerifiedWayHome Boolean  @default(false)
+  options            Json     @default("[]")
+  pendingApproval    Json?
+  timeline           Json     @default("[]")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([tripId])
+  @@map("incidents")
+}
+
+model Itinerary {
+  id        String   @id @default(cuid())
+  tripId    String
+  trip      Trip     @relation(fields: [tripId], references: [id])
+  version   Int
+  legs      Json
+  createdAt DateTime @default(now())
+
+  @@unique([tripId, version])
+  @@map("itineraries")
+}
+
+model Obligation {
+  id             String    @id
+  travellerId    String
+  description    String
+  amount         Int
+  dueDate        DateTime?
+  classification String // CONFIRMED | INFERRED | PROBABLE | UNCERTAIN
+  protected      Boolean   @default(true)
+  source         String
+  refreshedAt    DateTime
+
+  @@index([travellerId])
+  @@map("obligations")
+}
+
+model AuthorityLedger {
+  incidentId    String   @id
+  tripId        String
+  travellerId   String
+  incidentLimit Int      @default(2000)
+  openedOn      DateTime @db.Date
+
+  @@map("authority_ledgers")
+}
+
+/// Append-only ledger movements: RESERVE | COMMIT | RELEASE | RESTORE.
+model Transaction {
+  id                String   @id
+  incidentId        String
+  tripId            String
+  kind              String
+  amount            Int
+  reference         String // idempotency key
+  travellerApproved Boolean  @default(false)
+  at                DateTime @default(now())
+
+  @@unique([reference, kind])
+  @@index([incidentId])
+  @@map("transactions")
+}
+
+model Payment {
+  id             String   @id
+  idempotencyKey String   @unique
+  incidentId     String
+  tripId         String
+  amount         Int
+  rung           String
+  vendorId       String
+  status         String
+  externalRef    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("payments")
+}
+
+model Booking {
+  id             String   @id
+  idempotencyKey String   @unique
+  tripId         String
+  incidentId     String?
+  routeId        String
+  paymentId      String?
+  status         String
+  pnr            String
+  createdAt      DateTime @default(now())
+
+  @@map("bookings")
+}
+
+model Route {
+  id         String  @id
+  tripId     String
+  incidentId String?
+  data       Json
+
+  @@map("routes")
+}
+
+model ToolCall {
+  id             String    @id
+  tool           String
+  agent          String
+  tripId         String
+  incidentId     String?
+  idempotencyKey String?
+  args           Json
+  status         String // RUNNING | SUCCESS | FAILED | BLOCKED | AMBIGUOUS
+  result         Json?
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+
+  @@index([idempotencyKey])
+  @@map("tool_calls")
+}
+
+model AgentRun {
+  id         String    @id
+  tripId     String
+  incidentId String?
+  agent      String
+  attempt    Int       @default(1)
+  input      Json
+  output     Json?
+  status     String // RUNNING | COMPLETED | FAILED | WAITING
+  error      String?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@map("agent_runs")
+}
+
+model AuditLog {
+  id              String   @id
+  tripId          String
+  incidentId      String?
+  agent           String
+  tool            String
+  action          String
+  reasonCode      String
+  amount          Int?
+  authorityBefore Int?
+  authorityAfter  Int?
+  obligationCheck String // PASS | FAIL
+  complianceCheck String // PASS | FAIL
+  result          String // SUCCESS | FAILED | BLOCKED
+  timestamp       DateTime @default(now())
+
+  @@index([incidentId])
+  @@map("audit_logs")
+}
+
+model UndoAction {
+  id         String   @id
+  tripId     String
+  incidentId String
+  paymentId  String?
+  bookingId  String?
+  amount     Int
+  openedAt   DateTime
+  expiresAt  DateTime
+  status     String // OPEN | CANCELLED | EXPIRED | COMPENSATED
+
+  @@map("undo_actions")
+}
+
+model Consent {
+  id          String    @id
+  travellerId String
+  traveller   User      @relation(fields: [travellerId], references: [id])
+  scope       Json
+  grantedAt   DateTime  @default(now())
+  revokedAt   DateTime?
+
+  @@map("consents")
+}
+
+model OfflineCache {
+  id        String   @id
+  tripId    String
+  key       String // ROUTES | ITINERARY | EMERGENCY | VOICE
+  data      Json
+  fetchedAt DateTime @default(now())
+
+  @@index([tripId, key])
+  @@map("offline_cache")
+}

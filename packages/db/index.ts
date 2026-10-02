@@ -1,0 +1,123 @@
+import { DatabaseSync } from "node:sqlite";
+import { nowIso } from "../shared";
+
+// Prototype persistence: node:sqlite (experimental in Node 22) with one
+// document table per entity from spec §17. prisma/schema.prisma is the
+// production schema with the same table names.
+
+export const TABLES = [
+  "users",
+  "trips",
+  "trip_states",
+  "incidents",
+  "itineraries",
+  "obligations",
+  "authority_ledgers",
+  "transactions",
+  "payments",
+  "bookings",
+  "routes",
+  "tool_calls",
+  "agent_runs",
+  "audit_logs",
+  "undo_actions",
+  "consents",
+  "offline_cache",
+] as const;
+
+export type Table = (typeof TABLES)[number];
+
+// Spec §17 critical invariant: only the finance service mutates these.
+const FINANCE_ONLY: Table[] = ["obligations", "authority_ledgers", "transactions"];
+
+export type FinanceCapability = { readonly __finance: unique symbol };
+
+type Meta = { tripId?: string; incidentId?: string; key?: string };
+
+export class Store {
+  private db: DatabaseSync;
+  private financeCap: FinanceCapability | null = null;
+
+  constructor(path = ":memory:") {
+    this.db = new DatabaseSync(path);
+    this.db.exec("PRAGMA journal_mode = WAL;");
+    for (const t of TABLES) {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS ${t} (
+        id TEXT PRIMARY KEY,
+        trip_id TEXT,
+        incident_id TEXT,
+        key TEXT,
+        data TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS ${t}_trip ON ${t}(trip_id);
+      CREATE INDEX IF NOT EXISTS ${t}_incident ON ${t}(incident_id);
+      CREATE INDEX IF NOT EXISTS ${t}_key ON ${t}(key);`);
+    }
+  }
+
+  /** Issued exactly once, to the finance agent. */
+  issueFinanceCapability(): FinanceCapability {
+    if (this.financeCap) throw new Error("finance capability already issued: finance agent is the single writer");
+    this.financeCap = Object.freeze({}) as FinanceCapability;
+    return this.financeCap;
+  }
+
+  put<T>(table: Table, id: string, doc: T, meta: Meta = {}, cap?: FinanceCapability) {
+    if (FINANCE_ONLY.includes(table) && (!cap || cap !== this.financeCap)) {
+      throw new Error(`write to ${table} rejected: only the finance agent may mutate it`);
+    }
+    const now = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO ${table} (id, trip_id, incident_id, key, data, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET trip_id=excluded.trip_id, incident_id=excluded.incident_id,
+           key=excluded.key, data=excluded.data, updated_at=excluded.updated_at`,
+      )
+      .run(id, meta.tripId ?? null, meta.incidentId ?? null, meta.key ?? null, JSON.stringify(doc), now, now);
+    return doc;
+  }
+
+  get<T>(table: Table, id: string): T | undefined {
+    const row = this.db.prepare(`SELECT data FROM ${table} WHERE id = ?`).get(id) as { data: string } | undefined;
+    return row ? (JSON.parse(row.data) as T) : undefined;
+  }
+
+  list<T>(table: Table, filter: Meta = {}): T[] {
+    const where: string[] = [];
+    const args: string[] = [];
+    if (filter.tripId) (where.push("trip_id = ?"), args.push(filter.tripId));
+    if (filter.incidentId) (where.push("incident_id = ?"), args.push(filter.incidentId));
+    if (filter.key) (where.push("key = ?"), args.push(filter.key));
+    const sql = `SELECT data FROM ${table}${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at, rowid`;
+    return (this.db.prepare(sql).all(...args) as { data: string }[]).map((r) => JSON.parse(r.data) as T);
+  }
+
+  findByKey<T>(table: Table, key: string): T | undefined {
+    return this.list<T>(table, { key })[0];
+  }
+
+  delete(table: Table, id: string) {
+    if (FINANCE_ONLY.includes(table)) throw new Error(`delete on ${table} not allowed`);
+    this.db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
+  }
+
+  /** Synchronous atomic section. */
+  tx<R>(fn: () => R): R {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const r = fn();
+      this.db.exec("COMMIT");
+      return r;
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  close() {
+    this.db.close();
+  }
+}

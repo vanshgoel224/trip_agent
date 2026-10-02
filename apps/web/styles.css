@@ -1,0 +1,90 @@
+:root {
+  --bg: #f6f5f1;
+  --card: #ffffff;
+  --ink: #1d1d1b;
+  --muted: #6b6a65;
+  --line: #e4e2db;
+  --accent: #0f6b5c;
+  --accent-ink: #ffffff;
+  --warn: #b4530a;
+  --warn-bg: #fff4e8;
+  --bad: #b42318;
+  --ok: #0f7a3d;
+  --pending: #8a8880;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141412;
+    --card: #1d1d1a;
+    --ink: #ecebe6;
+    --muted: #a3a29b;
+    --line: #2f2e2a;
+    --accent: #3fb59f;
+    --accent-ink: #0b1512;
+    --warn: #f0a35e;
+    --warn-bg: #2b2016;
+    --bad: #f07a6f;
+    --ok: #58c98a;
+    --pending: #77766f;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+h1 { margin: 0; font-size: 22px; letter-spacing: 0.18em; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin: 18px 0 8px; }
+h2:first-child { margin-top: 0; }
+.tag { margin: 2px 0 0; color: var(--muted); }
+.top { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+.controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.toggle { display: flex; gap: 6px; align-items: center; color: var(--muted); }
+.scenarios { display: flex; gap: 8px; padding: 12px 16px; flex-wrap: wrap; }
+.scenarios button { font-size: 13px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 0.9fr); gap: 16px; padding: 0 16px 24px; }
+@media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
+.big { font-size: 20px; font-weight: 600; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.hidden { display: none !important; }
+button {
+  background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px;
+  padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer;
+}
+button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+button:disabled { opacity: 0.5; cursor: default; }
+.alert { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-weight: 600; }
+.checklist { list-style: none; padding: 0; margin: 0; }
+.checklist li { padding: 4px 0; display: flex; gap: 10px; }
+.checklist .mark { width: 18px; text-align: center; font-weight: 700; }
+.checklist .done .mark { color: var(--ok); }
+.checklist .fail .mark { color: var(--bad); }
+.checklist .live .mark { color: var(--accent); }
+.checklist .todo { color: var(--pending); }
+.approval { margin-top: 12px; padding: 12px; border: 1px solid var(--warn); border-radius: 8px; }
+.approval p { margin: 0 0 10px; }
+.row { display: flex; gap: 8px; }
+.result { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 14px 0 0; }
+.result dt { color: var(--muted); }
+.result dd { margin: 0; font-weight: 600; }
+.undo { width: 100%; margin-top: 14px; padding: 14px; font-size: 16px; letter-spacing: 0.1em; background: var(--bad); color: #fff; }
+.itinerary { padding-left: 18px; margin: 0; }
+.itinerary li { margin: 4px 0; }
+.itinerary .REPLACED, .itinerary .CANCELLED { text-decoration: line-through; color: var(--muted); }
+.thread { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow-y: auto; padding-right: 4px; }
+.msg { padding: 8px 12px; border-radius: 10px; max-width: 92%; overflow-wrap: anywhere; }
+.msg.me { align-self: flex-end; background: var(--accent); color: var(--accent-ink); }
+.msg.biruni { align-self: flex-start; background: var(--bg); border: 1px solid var(--line); }
+.msg .meta { display: block; font-size: 11px; opacity: 0.7; margin-bottom: 2px; }
+.say { display: flex; gap: 8px; margin-top: 12px; }
+.say input { flex: 1; min-width: 0; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit; }
+.activity { list-style: none; margin: 0; padding: 0; max-height: 70vh; overflow-y: auto; font-size: 13px; }
+.activity li { padding: 6px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.activity .who { font-weight: 700; margin-right: 6px; }
+.activity .t { color: var(--muted); font-size: 11px; margin-right: 6px; font-variant-numeric: tabular-nums; }
+.activity .MCP_CALL .who { color: var(--accent); }
+.activity .AGENT_FAILED, .activity .RECONCILED { color: var(--warn); }

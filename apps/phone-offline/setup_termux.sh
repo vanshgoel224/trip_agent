@@ -25,7 +25,7 @@ pip install requests
 echo ""
 echo "Setup done. To run:"
 echo "  1. In one Termux session: proot-distro login ubuntu -- ollama serve"
-echo "  2. In another: cd trip_agent && python agent.py"
+echo "  2. In another: cd trip_agent/apps/phone-offline && python agent.py"
 echo ""
 echo "RAM note: on 8GB phones, close background apps before running — the 3B model"
 echo "needs ~2.5-3GB free RAM. If it OOMs, switch MODEL in agent.py to a 1.5B variant."
