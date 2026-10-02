@@ -29,7 +29,12 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: android-actions/setup-android@v3
+      # ubuntu-latest ships the Android SDK (ANDROID_HOME); Gradle downloads any missing
+      # platform once the licences are accepted.
+      - name: Android SDK licences
+        run: |
+          SDKM=$(ls -d $ANDROID_HOME/cmdline-tools/*/bin/sdkmanager | sort | tail -1)
+          yes | "$SDKM" --licenses > /dev/null || true
 
       - name: Install Capacitor
         run: npm install --no-audit --no-fund

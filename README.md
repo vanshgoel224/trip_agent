@@ -19,6 +19,13 @@ On top of the spec's recovery engine there is a conversational layer:
 - typo-tolerant matching everywhere
 - Delhivery parcel/luggage **booking** (simulated until a key is added)
 - light and dark themes, with an emoji and name for every chat
+- **multi-user**: each person has their own encrypted space; **shared trips** for groups, where the trip leader controls cancellations
+- **SOS help channel**: tell trip members, trusted contacts or any opted-in Biruni user "I'm stuck here", with your location
+- **travel booking** for flights, trains, buses and hotels (TBO / Agoda / EaseMyTrip slots; simulated until partner keys)
+- **operator status feed** (forwarded SMS/email, AviationStack, partner status) feeding the autopilot
+- **telephony** (Exotel SMS and live negotiation calls; simulated without keys)
+- **bring-your-own-key** models: Claude, Gemini, Nemotron, DeepSeek and more, plus Hermes Agent locally
+- a **PWA** and an **Android APK**, Docker images, and a **remote MCP** endpoint
 
 **Status, bluntly (as of the latest commit):** the recovery engine, guardrails, chats, memory, expense splitting, maps, translation (text) and the MCP client are tested and work. Live adapters for Gnani, Pine Labs, Setu AA, Zerodha, Google Calendar, Reddit, YouTube and Splitwise are written from each provider's official docs or SDK but **have not been run against real accounts**: no keys were available. Without keys, those rails run on the simulator, and voice uses the device's built-in voices. Delhivery bookings are simulated until a key is added. See [What is not built](#what-is-not-built).
 
@@ -29,9 +36,10 @@ Requires Node ≥ 22.5. Persistence uses the built-in `node:sqlite`, which is st
 ```bash
 npm install
 cp .env.example .env   # set GEMINI_API_KEY (or ONLINE_MODEL_API_KEY) and BIRUNI_INITIAL_PIN; .env is git-ignored
-npm test          # 60 tests: authority, payments, idempotency, recovery, restart, chats, memory, expenses, sensors
+npm test          # 82 tests: authority, payments, idempotency, recovery, chats, memory, models, booking, feed, telephony, multi-user, SOS
+npm run test:e2e  # real server under ~1,000 hostile requests + remote MCP
 npm run demo      # CLI walkthrough of every scenario (short undo window)
-npm start         # API + UI on http://localhost:8787 — starts LOCKED; enter your PIN
+npm start         # API + UI on http://localhost:8787 — starts LOCKED; sign in (BIRUNI_INITIAL_PIN creates user "owner")
 npm run models:check   # ping Nemotron (needs ONLINE_MODEL_API_KEY) and local Qwen/Ollama
 ```
 
@@ -48,6 +56,15 @@ In the UI:
 - **Trip ▸** opens the status, map, undo button and agent activity panel.
 
 Phone sensors (GPS, accelerometer, microphone) only work on `https://` or `localhost`. To use them from a phone, put the server behind an HTTPS tunnel.
+
+### Docker
+
+```bash
+docker compose up -d                          # app on :8787, data in the biruni-data volume
+docker compose --profile test run --rm test   # full suite + e2e inside a container
+docker build --target test .                  # what CI runs (.github/workflows/ci.yml)
+```
+If Docker Hub rate-limits you, add `--build-arg NODE_IMAGE=mirror.gcr.io/library/node:22-slim`.
 
 ## Architecture
 
@@ -133,20 +150,69 @@ ollama pull qwen3:4b && ollama serve       # on the phone/laptop, for the offlin
 npm run models:check
 ```
 
-## Security: PIN lock and encryption at rest
+## Accounts, encryption and multi-user
 
-- **Every stored record** (chats, memory, trips, deals, payments, feedback and the rest) is encrypted with AES-256-GCM. The key is derived from your PIN with scrypt (N=2^17, about 0.3 s per attempt) and lives only in RAM. The PIN is never stored.
-- **Opaque IDs:** the database's row ids and index columns are opaque. Memory ids are hashes, so they can't leak content.
-- **Boots locked:** the server starts locked, and the runtime, autopilot and MCP connections don't load until the PIN is entered.
-- **First run:** you set a PIN in the app, or it's taken from `BIRUNI_INITIAL_PIN` in your local `.env`. Any existing plaintext data is encrypted at that point.
-- **Sessions:** every API call and the live event stream need an unlock session. That's an HttpOnly, SameSite=Strict cookie that expires after 30 idle minutes (`LOCK_IDLE_MIN`).
-- **🔒 Lock** locks the screen. Connections → **Change PIN** re-encrypts everything in a single transaction.
+The key handling follows the patterns Signal and similar apps use:
+- **Your own encrypted space.** Each account has a random 256-bit **data key (DEK)**. Your data lives in its own database file, AES-256-GCM encrypted with that key.
+- **The DEK is wrapped by your PIN.** The wrapping key comes from your PIN through **Argon2id** (64 MiB, 3 passes), so each guess is slow and memory-hard. Changing your PIN only re-wraps the DEK; nothing is re-encrypted.
+- **Records are bound to their place.** Every record is tied to its `table:id` with AES-GCM AAD, so ciphertext can't be swapped between rows.
+- **Identity keys.** Each user has an X25519 key pair; the private key is encrypted with their DEK.
+- **Shared trips:**
+  - A random **trip key** encrypts the group chat, itinerary snapshots and cancellation requests.
+  - That key is **sealed to each member's public key** (ephemeral X25519 + HKDF-SHA256 + AES-GCM).
+  - Removing someone **rotates the key** and re-encrypts the trip's items.
+- **Safety numbers.** You get 60 digits per pair of users; compare them in person to rule out a server swapping keys.
+- **Only the trip leader decides cancellations.** Members ask; the leader approves and the cancellation runs in the leader's own space. Leadership can be handed over.
+- **Sessions.** HttpOnly, SameSite=Strict cookies (`Secure` and HSTS when served over HTTPS) with a 30-minute idle timeout. "Sign out everywhere" drops the key from memory.
+- **Live events stay private.** Activity streams are filtered per user, so nobody sees another person's events.
+- **Upgrading from the old single-PIN version:** the first sign-in with your existing PIN adopts the old database as your account. Nothing is re-encrypted.
 - **No lockout after wrong PINs** (your choice).
 
 Limits, bluntly:
-- A 4-digit PIN has 10,000 combinations. With a copy of the database file, an attacker can try them all offline in under an hour despite scrypt. Use 6 or more digits, or a password, if the file could be stolen.
-- While unlocked, the key is in the server's memory; locking the screen doesn't remove it, which is what lets the autopilot keep running. Only a server restart does.
-- `.env` (API keys) and exported `memory-out/` files are **not** encrypted.
+- **The server can see some metadata:** who is in which shared trip, who sent an SOS to whom, and when. It cannot see what was said or where anyone is.
+- **Short PINs are weak if the files are stolen.** With a copy of the data files, a 4-digit PIN falls to offline guessing (Argon2id slows it but 10,000 guesses is still small). Use 6 or more digits, or a password.
+- **Unlocked keys are in server memory.** While you're unlocked, your key stays in the server's memory so the autopilot can work.
+- **`.env` is not encrypted.**
+- Webhooks, remote MCP and telephony act for one **service user** (`BIRUNI_SERVICE_USER`, default: the first account).
+
+## SOS help channel
+
+"I'm stuck in a Himalayan cave; contact the authorities or come help before they arrive."
+- **SOS** (the red button) sends your message and location to:
+  - your shared-trip members and trusted contacts, and
+  - optionally, everyone on the server who opted in to help.
+- **Recipients answer** "I'm coming", "I've called the authorities" (with a note such as "Called SDRF, ETA 2 h"), "Seen" or "Can't help". You see every answer. Only you can mark yourself safe.
+- **It works even when locked.** The lock screen says "🚨 1 SOS alert waiting" before sign-in (a count only; details need the PIN). A live alert pops up for signed-in recipients.
+- **Emergency contact by SMS.** Your trip's emergency contact gets an SMS with a map link. It's simulated until Exotel keys are set.
+- **No server, no problem.** If the server can't be reached, the app offers a ready-made **SMS with your last known location**. That location is stored **encrypted on the phone** (PBKDF2-SHA256 600k + AES-GCM, key in memory only while signed in).
+- **112 and 108 are always one tap away. Biruni does not dispatch police or rescue.** 1363 is listed as the tourist helpline; verify it for your state.
+
+## Power
+
+- **Real behaviour:** the app reads the battery where the browser allows. Below 20%, or with **Power saver** on, Biruni slows itself down (GPS every 60 s instead of 10 s).
+- **Smart power panel: a demo only.** It shows how a native build would favour Biruni, phone/SMS and maps. Neither web nor Android apps can take power from other apps, and the panel says so.
+
+## Legal
+
+- **First-run notice:** Biruni™ helps; you decide and you are responsible.
+- **Full terms** are at `apps/web/legal.html`.
+- **Licence:** `LICENSE` (proprietary, all rights reserved; a template, so have a lawyer review it). `NOTICE` lists third-party licences (MapLibre BSD-3, OSM ODbL and others).
+
+## Travel booking, operator feed, telephony
+
+- **Booking** (🎫 *Book travel* chat, or `travel_search` / `travel_book` tools):
+  - Covers flights, trains, buses and hotels for any Indian city pair, priced in ₹.
+  - Bookings are idempotent and need an explicit yes plus names as on ID. They become itinerary legs the autopilot watches.
+  - **TBO / Agoda / EaseMyTrip are slots.** Their APIs come with partner onboarding (business KYC), so Biruni says "not wired" instead of guessing endpoints, and the **simulator** serves everything meanwhile.
+- **Operator status feed:**
+  - Forwarded SMS/email from operators is parsed with no model call (English and Hindi: cancelled, delay "2 hrs 15 mins" or "२ घंटे देरी", rescheduled). Use the 🚨 chat, `POST /api/feed/message`, or SMS-forwarder apps via `POST /api/feed/inbound` (`FEED_TOKEN`).
+  - **AviationStack** handles flight status (`AVIATIONSTACK_KEY`).
+  - Status changes on partner bookings are also picked up.
+  - Every signal goes through the autopilot's corroboration and ₹2,000 rules.
+- **Telephony (Exotel):**
+  - **SMS** for negotiations, plus inbound SMS.
+  - **Live calls:** Biruni rings the driver or hotel. The call flow streams 8 kHz audio to `wss://…/telephony/exotel/stream/<secret>`. Speech is detected, transcribed (Gnani), passed to the negotiator (which still decides every price deterministically) and spoken back, with barge-in.
+  - Simulated without keys. Endpoint shapes should be verified on developer.exotel.com; India needs DLT registration for SMS.
 
 ## Negotiator: hotels, taxis, autos
 
@@ -337,16 +403,17 @@ These are my calls. Review them before freeze.
 | Gap | Why | What closes it |
 |---|---|---|
 | Live rails never run against real accounts | no keys during development | run each with its key; expect field-name fixes |
-| Pine Labs can't debit you autonomously | gateways need a mandate or pre-auth | a Pine Labs mandate product (the design's "Grantex authority") |
-| No real bus/train/flight inventory or booking | no API wired; alternatives and PNRs are simulated | an aggregator API (bus, IRCTC or flight partner) |
+| TBO / Agoda / EaseMyTrip real booking | partner API kits need business KYC | wire endpoints from the partner kit into `services/integrations/partners` |
+| Exotel calls on a real phone | no Exotel account; stream message format unverified | test one call; adjust frame fields if Exotel differs |
+| Multi-server SOS / push notifications when the app is closed | alerts reach users of the same server, live or at next sign-in | Web Push / FCM |
+| Pine Labs can't debit you autonomously | gateways need a mandate or pre-auth | skipped by your decision; a mandate product later |
 | Delhivery waybill/shipment creation | request format isn't public | Delhivery One developer portal access |
-| Phone calls and SMS for the negotiator | needs a telephony provider | Exotel, Twilio, or a Gnani voice-bot account |
 | WhatsApp cold outreach | WhatsApp's 24-hour rule | an approved message template |
-| Operator status feed for the autopilot | simulated | a real operator, IRCTC or bus-aggregator status API |
+| Train/bus live status | no official public API; forwarded SMS works today | IRCTC/aggregator partner access |
 | On-phone local model | Hermes/Ollama run on a computer, not inside the phone app | a native on-device build (llama.cpp or MLC) |
 | APK voice without Gnani | Android WebView lacks the Web Speech API | Gnani keys, or native speech plugins |
 | Hosting on Vercel | stateless functions, no persistent disk | hosted DB + cron, or use an always-on host |
-| Multi-user, accounts, cloud sync | single user, one SQLite file | auth plus Postgres (the Prisma schema exists) |
+| Cloud sync across servers / devices | one server holds the encrypted spaces | multi-device key sync |
 | Translation quality in low-resource languages | depends on the model | a native-speaker review, and a stronger model for those languages |
 | Crash detection | a heuristic | proper validation on real devices |
 | `graphify-out/` | describes the old Python code | rerun graphify |
@@ -355,7 +422,7 @@ These are my calls. Review them before freeze.
 
 ```
 apps/web               Grok-style chat UI + PWA (vanilla JS, MapLibre vendored locally, SSE activity, sensors, mic/WAV recorder)
-apps/api               HTTP API, spec §23 endpoints + /api/scenarios, /api/events, /mcp (remote MCP)
+apps/api/src           server.ts (sign-in, isolation, webhooks), http.ts, spaces.ts (per-user runtimes), routes/* (one file per feature)
 apps/mobile            Capacitor Android shell (launcher page, icons); APK built in GitHub Actions
 config/hermes          hardened Hermes Agent config (tools off, localhost only)
 apps/phone-offline     previous offline Python agent (see its README)
@@ -364,6 +431,13 @@ services/agents/*      finance, recovery (+ undo), compliance, voice, travel, bo
 services/mcp           server pipeline, tools, middleware, zod schemas, stdio entry
 services/integrations  five rails (mock + live stub), simulator, scenarios
 services/models        model router, BYOK providers (Anthropic SDK adapter), encrypted settings
+services/social        shared trips + SOS (sealed per recipient)
+services/integrations/partners   booking partners + simulator
+services/feed          operator status feed
+services/telephony     Exotel SMS/calls, audio (VAD, WAV, resample)
+packages/crypto        Argon2id, envelope keys, X25519 sealed boxes, safety numbers
+packages/db/accounts.ts  accounts (wrapped DEKs, identity keys)
+apps/web/modules       sos, people, legal, battery, securelocal (each starts independently)
 services/conversation.ts  chat entry point + voice translation pipeline
 services/orchestrator/chat-agent.ts, chats.ts   LLM agent and per-function chats
 services/memory        graph memory (graphify format)
