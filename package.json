@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "description": "Biruni — bounded-autonomy travel recovery agent (KEN Round 3 prototype)",
   "scripts": {
-    "dev": "node --no-warnings=ExperimentalWarning --import tsx apps/api/src/server.ts",
-    "start": "node --no-warnings=ExperimentalWarning --import tsx apps/api/src/server.ts",
-    "mcp:stdio": "node --no-warnings=ExperimentalWarning --import tsx services/mcp/stdio.ts",
-    "demo": "node --no-warnings=ExperimentalWarning --import tsx tests/scenarios/run-demo.ts",
+    "dev": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx apps/api/src/server.ts",
+    "start": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx apps/api/src/server.ts",
+    "mcp:stdio": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx services/mcp/stdio.ts",
+    "demo": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx tests/scenarios/run-demo.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --no-warnings=ExperimentalWarning --import tsx --test \"tests/**/*.test.ts\"",
-    "models:check": "node --no-warnings=ExperimentalWarning --import tsx scripts/check-models.ts"
+    "models:check": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx scripts/check-models.ts"
   },
   "repository": {
     "type": "git",

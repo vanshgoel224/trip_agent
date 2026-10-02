@@ -12,6 +12,7 @@ Requires Node ≥ 22.5. Persistence uses the built-in `node:sqlite`, which is st
 
 ```bash
 npm install
+cp .env.example .env   # put GEMINI_API_KEY (or ONLINE_MODEL_API_KEY) in it; .env is git-ignored
 npm test          # 22 tests: authority, payments/obligations, idempotency, recovery, restart
 npm run demo      # CLI walkthrough of every scenario (short undo window)
 npm start         # API + demo UI on http://localhost:8787 (30s undo window)
