@@ -5,6 +5,11 @@ name: Android APK
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - "apps/mobile/**"
+      - "apps/web/icons/**"
+      - ".github/workflows/android-apk.yml"
 
 jobs:
   build:
