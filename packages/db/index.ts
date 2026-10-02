@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { nowIso } from "../shared";
+import type { Cipher } from "./vault";
 
 // Prototype persistence: node:sqlite (experimental in Node 22) with one
 // document table per entity from spec §17. prisma/schema.prisma is the
@@ -57,7 +58,7 @@ export class Store {
     return st;
   }
 
-  constructor(path = ":memory:") {
+  constructor(path = ":memory:", private cipher?: Cipher) {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL;");
     for (const t of TABLES) {
@@ -74,6 +75,46 @@ export class Store {
       CREATE INDEX IF NOT EXISTS ${t}_incident ON ${t}(incident_id);
       CREATE INDEX IF NOT EXISTS ${t}_key ON ${t}(key);`);
     }
+  }
+
+  // ---------- encryption at rest ----------
+  private seal(json: string) {
+    return this.cipher ? this.cipher.encrypt(json) : json;
+  }
+  private open(stored: string) {
+    return this.cipher ? this.cipher.decrypt(stored) : stored;
+  }
+  get encrypted() {
+    return !!this.cipher;
+  }
+
+  /** Encrypts any plaintext rows left from before a PIN was set. Returns rows migrated. */
+  encryptAll(): number {
+    if (!this.cipher) return 0;
+    let n = 0;
+    this.tx(() => {
+      for (const t of TABLES) {
+        const rows = this.db.prepare(`SELECT id, data FROM ${t} WHERE data NOT LIKE 'enc1:%'`).all() as { id: string; data: string }[];
+        const upd = this.db.prepare(`UPDATE ${t} SET data = ? WHERE id = ?`);
+        for (const r of rows) (upd.run(this.cipher!.encrypt(r.data), r.id), n++);
+      }
+    });
+    return n;
+  }
+
+  /** PIN change: re-encrypt every row and update the vault row atomically. */
+  reencrypt(from: Cipher, to: Cipher, vaultRow: string): number {
+    let n = 0;
+    this.tx(() => {
+      for (const t of TABLES) {
+        const rows = this.db.prepare(`SELECT id, data FROM ${t}`).all() as { id: string; data: string }[];
+        const upd = this.db.prepare(`UPDATE ${t} SET data = ? WHERE id = ?`);
+        for (const r of rows) (upd.run(to.encrypt(from.decrypt(r.data)), r.id), n++);
+      }
+      this.db.prepare("UPDATE vault SET data = ? WHERE id = 1").run(vaultRow);
+    });
+    this.cipher = to;
+    return n;
   }
 
   /** Issued exactly once, to the finance agent. */
@@ -95,13 +136,13 @@ export class Store {
          ON CONFLICT(id) DO UPDATE SET trip_id=excluded.trip_id, incident_id=excluded.incident_id,
            key=excluded.key, data=excluded.data, updated_at=excluded.updated_at`,
       )
-      .run(id, meta.tripId ?? null, meta.incidentId ?? null, meta.key ?? null, JSON.stringify(doc), now, now);
+      .run(id, meta.tripId ?? null, meta.incidentId ?? null, meta.key ?? null, this.seal(JSON.stringify(doc)), now, now);
     return doc;
   }
 
   get<T>(table: Table, id: string): T | undefined {
     const row = this.stmt(`SELECT data FROM ${table} WHERE id = ?`).get(id) as { data: string } | undefined;
-    return row ? (JSON.parse(row.data) as T) : undefined;
+    return row ? (JSON.parse(this.open(row.data)) as T) : undefined;
   }
 
   list<T>(table: Table, filter: Meta = {}): T[] {
@@ -111,7 +152,7 @@ export class Store {
     if (filter.incidentId) (where.push("incident_id = ?"), args.push(filter.incidentId));
     if (filter.key) (where.push("key = ?"), args.push(filter.key));
     const sql = `SELECT data FROM ${table}${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at, rowid`;
-    return (this.stmt(sql).all(...args) as { data: string }[]).map((r) => JSON.parse(r.data) as T);
+    return (this.stmt(sql).all(...args) as { data: string }[]).map((r) => JSON.parse(this.open(r.data)) as T);
   }
 
   findByKey<T>(table: Table, key: string): T | undefined {

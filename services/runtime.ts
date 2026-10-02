@@ -1,5 +1,6 @@
 // Composition root: wires store, rails, MCP server, specialists and orchestrator.
 import { Store } from "../packages/db";
+import type { Cipher } from "../packages/db/vault";
 import { config } from "../packages/shared";
 import { createProviders, type Providers } from "./integrations";
 import { seedVendors } from "./integrations/simulator";
@@ -30,8 +31,9 @@ import { inr } from "../packages/shared";
 
 export type Biruni = ReturnType<typeof createBiruni>;
 
-export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; providers?: Providers } = {}) {
-  const store = new Store(opts.dbPath ?? ":memory:");
+export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; providers?: Providers; cipher?: Cipher } = {}) {
+  const store = new Store(opts.dbPath ?? ":memory:", opts.cipher);
+  if (opts.cipher) store.encryptAll(); // migrate rows written before the PIN existed
   const providers = opts.providers ?? createProviders();
   seedVendors();
 

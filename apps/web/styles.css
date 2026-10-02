@@ -222,3 +222,13 @@ dialog:has(.wide) { width: min(860px, calc(100vw - 24px)); }
 .deal .reply { display: flex; gap: 6px; }
 .deal .reply input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; color: var(--ink); font: inherit; }
 .deal details { font-size: 12px; color: var(--muted); }
+.lock { position: fixed; inset: 0; z-index: 100; background: var(--bg); display: grid; place-items: center; padding: 16px; }
+.lock.hidden { display: none; }
+.lock-box { width: min(340px, 100%); text-align: center; display: grid; gap: 10px; }
+.lock-box h1 { margin: 0; font-size: 26px; letter-spacing: 0.04em; }
+.lock-box form { display: grid; gap: 10px; }
+.lock-box input { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; color: var(--ink); font: inherit; font-size: 22px; text-align: center; letter-spacing: 0.4em; }
+.pinpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.pinpad button { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 0; font-size: 20px; color: var(--ink); }
+.pinpad button:active { background: var(--panel-2); }
+.lock-err { color: var(--bad); min-height: 1.2em; margin: 0; font-size: 13px; }

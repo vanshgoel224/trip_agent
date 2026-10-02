@@ -8,11 +8,80 @@ const store = { get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)
 const S = { modes: [], chats: [], chatId: store.get("chatId", null), tripId: store.get("tripId", ""), snap: null, langs: [], es: null, connections: null };
 
 async function api(method, path, body) {
-  const r = await fetch(path, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  const r = await fetch(path, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin" });
   const j = await r.json().catch(() => ({}));
+  if (r.status === 401 && j.error?.code === "LOCKED") {
+    showLock();
+    throw new Error("Locked");
+  }
   if (!r.ok) throw new Error(j.error?.message ?? r.statusText);
   return j;
 }
+
+// ---------------- PIN lock ----------------
+let lockMode = "unlock";
+function showLock(mode) {
+  S.es?.close();
+  lockMode = mode ?? lockMode;
+  $("lockScreen").classList.remove("hidden");
+  $("pinConfirm").classList.toggle("hidden", lockMode !== "setup");
+  $("lockMsg").textContent = lockMode === "setup" ? "Create a PIN (4–12 digits) or a password (6+ characters)" : "Enter your PIN";
+  $("pinGo").textContent = lockMode === "setup" ? "Set PIN" : "Unlock";
+  $("pinInput").value = "";
+  $("pinConfirm").value = "";
+  setTimeout(() => $("pinInput").focus(), 50);
+}
+$("pinpad").innerHTML = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "⌫", "0", "✓"].map((k) => `<button type="button" data-pin="${k}">${k}</button>`).join("");
+$("pinpad").onclick = (e) => {
+  const k = e.target.closest("[data-pin]")?.dataset.pin;
+  if (!k) return;
+  const field = lockMode === "setup" && !$("pinConfirm").classList.contains("hidden") && document.activeElement === $("pinConfirm") ? $("pinConfirm") : $("pinInput");
+  if (k === "⌫") field.value = field.value.slice(0, -1);
+  else if (k === "✓") $("lockForm").requestSubmit();
+  else field.value += k;
+};
+$("lockForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const pin = $("pinInput").value;
+  $("lockErr").textContent = "";
+  if (lockMode === "setup" && pin !== $("pinConfirm").value) return void ($("lockErr").textContent = "PINs don't match");
+  $("pinGo").disabled = true;
+  $("pinGo").textContent = lockMode === "setup" ? "Encrypting…" : "Unlocking…";
+  try {
+    const r = await fetch(lockMode === "setup" ? "/api/lock/setup" : "/api/lock/unlock", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pin }), credentials: "same-origin" });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error?.message ?? "Failed");
+    $("lockScreen").classList.add("hidden");
+    await startApp();
+  } catch (err) {
+    $("lockErr").textContent = err.message;
+    $("pinInput").value = "";
+    $("pinInput").focus();
+  } finally {
+    $("pinGo").disabled = false;
+    $("pinGo").textContent = lockMode === "setup" ? "Set PIN" : "Unlock";
+  }
+};
+$("lockBtn").onclick = async () => {
+  await fetch("/api/lock/lock", { method: "POST", credentials: "same-origin" }).catch(() => {});
+  showLock("unlock");
+};
+$("pinChangeForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  try {
+    const r = await api("POST", "/api/lock/change", f);
+    e.target.reset();
+    alert(`PIN changed. ${r.reencrypted} records re-encrypted.`);
+  } catch (err) {
+    alert(err.message);
+  }
+};
+// Client-side idle lock mirrors the server's (server is the real enforcer).
+let idleTimer;
+const IDLE_MS = 30 * 60_000;
+const bump = () => (clearTimeout(idleTimer), (idleTimer = setTimeout(() => $("lockBtn").click(), IDLE_MS)));
+["click", "keydown", "touchstart"].forEach((ev) => document.addEventListener(ev, bump, { passive: true }));
 
 // ---------------- chats ----------------
 const modeInfo = (m) => S.modes.find((x) => x.mode === m) ?? { label: m, icon: "•" };
@@ -866,7 +935,11 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); $("topNewChat").click(); }
 });
 
-(async function init() {
+let started = false;
+async function startApp() {
+  bump();
+  if (started) return void (connectEvents(), loadChats(), refreshTrip());
+  started = true;
   await loadModes();
   await Promise.all([loadChats(), loadTrips(), loadLanguages(), api("GET", "/api/connections").then((c) => (S.connections = c)).catch(() => {})]);
   connectEvents();
@@ -876,4 +949,12 @@ document.addEventListener("keydown", (e) => {
   const qs = new URLSearchParams(location.search);
   if (qs.get("calendar") === "connected") addMsg("assistant", "Google Calendar connected.");
   if (qs.get("zerodha") === "connected") addMsg("assistant", "Zerodha connected for today (read-only; never sold for recovery).");
+}
+
+(async function init() {
+  const st = await fetch("/api/lock/status", { credentials: "same-origin" }).then((r) => r.json()).catch(() => ({}));
+  if (st.unlocked) {
+    $("lockScreen").classList.add("hidden");
+    await startApp();
+  } else showLock(st.configured ? "unlock" : "setup");
 })();

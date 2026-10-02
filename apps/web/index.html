@@ -9,6 +9,21 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <div class="lock" id="lockScreen">
+    <div class="lock-box">
+      <div class="hero-logo">◐</div>
+      <h1>Biruni</h1>
+      <p class="muted" id="lockMsg">Enter your PIN</p>
+      <form id="lockForm" autocomplete="off">
+        <input id="pinInput" type="password" inputmode="numeric" autocomplete="current-password" maxlength="64" placeholder="PIN" aria-label="PIN" />
+        <input id="pinConfirm" class="hidden" type="password" inputmode="numeric" maxlength="64" placeholder="Repeat PIN" aria-label="Repeat PIN" />
+        <div class="pinpad" id="pinpad"></div>
+        <button class="pill accent" id="pinGo">Unlock</button>
+      </form>
+      <p class="lock-err" id="lockErr" role="alert"></p>
+      <p class="muted small">Your data is encrypted with a key made from this PIN.</p>
+    </div>
+  </div>
   <div class="app">
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
@@ -34,6 +49,7 @@
         <button class="side-link" id="memoryBtn">⌘ Memory graph</button>
         <button class="side-link" id="connBtn">⚙ Connections</button>
         <button class="side-link" id="feedbackBtn">💬 Send feedback</button>
+        <button class="side-link" id="lockBtn">🔒 Lock</button>
         <div class="toggles">
           <label><input type="checkbox" id="online" checked /> Online</label>
           <label><input type="checkbox" id="speak" /> Speak replies</label>
@@ -193,6 +209,13 @@
         <button class="chip" data-op="DELAYED:200">⏱ Delay 200 min</button>
         <button class="chip" data-op="CANCELLED:unverified">❓ Unconfirmed cancel rumour</button>
       </div>
+      <h3>Security</h3>
+      <form id="pinChangeForm" class="mcp-form" style="grid-template-columns:1fr 1fr auto">
+        <input name="oldPin" type="password" inputmode="numeric" placeholder="Current PIN" required />
+        <input name="newPin" type="password" inputmode="numeric" placeholder="New PIN (4–12 digits or 6+ char password)" required />
+        <button class="pill accent">Change PIN</button>
+      </form>
+      <p class="muted small">Changing the PIN re-encrypts all stored data. Auto-locks after inactivity.</p>
       <h3>Feedback</h3>
       <div id="feedbackSummary" class="muted small"></div>
       <div class="row"><a class="pill" href="/api/feedback.csv">Export CSV</a></div>

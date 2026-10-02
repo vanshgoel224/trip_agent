@@ -167,7 +167,7 @@ export class Negotiator {
   }
   private save(d: Deal) {
     d.updatedAt = nowIso();
-    this.store.put("deals", d.dealId, d, { tripId: d.tripId, key: d.counterparty.phone });
+    this.store.put("deals", d.dealId, d, { tripId: d.tripId }); // phone stays inside the encrypted record
     bus.emitEvent({ tripId: d.tripId ?? "*", agent: "negotiator", type: "DEAL", detail: `${d.kind} with ${d.counterparty.name}: ${d.status}${d.agreedPrice ? ` at ${inr(d.agreedPrice)}` : ""}`, data: { dealId: d.dealId } });
     return d;
   }

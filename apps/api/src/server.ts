@@ -18,12 +18,44 @@ import { ZerodhaProvider } from "../../../services/integrations/zerodha";
 import { SetuProvider } from "../../../services/integrations/setu-aa";
 import { endpointChain, onlineEndpoint, offlineEndpoint } from "../../../services/models";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { Vault, type Cipher } from "../../../packages/db/vault";
+import type { Biruni } from "../../../services/runtime";
 import { mkdir, writeFile } from "node:fs/promises";
 import { bus, type BiruniEvent } from "../../../packages/events";
 import { BiruniError, config } from "../../../packages/shared";
 import type { Incident, TripState } from "../../../packages/domain";
 
-const b = createBiruni({ dbPath: config.dbPath });
+// The runtime (and every byte of stored data) stays unavailable until the PIN is entered.
+const vault = new Vault(config.dbPath);
+let b: Biruni = undefined as unknown as Biruni;
+let unlocked = false;
+let calendar: GoogleCalendar;
+async function boot(cipher: Cipher) {
+  b = createBiruni({ dbPath: config.dbPath, cipher });
+  calendar = new GoogleCalendar(b.store);
+  unlocked = true;
+  void b.mcpClients.connectAll();
+  void endpointChain(true).catch(() => {}); // warm-up: resolve the model + local health before the first message
+  b.autopilot.start(); // L4: watches every active trip every AUTOPILOT_TICK_MS (default 60s)
+  console.log(`Unlocked. Data encrypted at rest (AES-256-GCM).${b.rehydrated ? ` Rehydrated ${b.rehydrated} open undo window(s).` : ""}`);
+}
+
+// Sessions: random token in an HttpOnly cookie; idle timeout LOCK_IDLE_MIN (default 30).
+const sessions = new Map<string, number>();
+const IDLE_MS = Number(process.env.LOCK_IDLE_MIN ?? 30) * 60_000;
+const cookieOf = (req: IncomingMessage) => /(?:^|;\s*)biruni_session=([a-f0-9]{64})/.exec(String(req.headers.cookie ?? ""))?.[1];
+function validSession(req: IncomingMessage) {
+  const t = cookieOf(req);
+  const seen = t && sessions.get(t);
+  if (!t || !seen || Date.now() - seen > IDLE_MS) return (t && sessions.delete(t), false);
+  sessions.set(t, Date.now());
+  return true;
+}
+function startSession(res: ServerResponse) {
+  const t = randomBytes(32).toString("hex");
+  sessions.set(t, Date.now());
+  res.setHeader("set-cookie", `biruni_session=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.round(IDLE_MS / 1000) * 48}`);
+}
 const WEB_ROOT = fileURLToPath(new URL("../../web/", import.meta.url));
 
 type Handler = (req: IncomingMessage, body: any, params: Record<string, string>, url: URL) => Promise<unknown> | unknown;
@@ -138,7 +170,7 @@ route("GET", "/api/device/state", (_r, _b, _p, url) => {
 });
 
 // ---------- connections ----------
-const calendar = new GoogleCalendar(b.store);
+
 const oauthStates = new Set<string>();
 route("GET", "/api/connections", () => {
   const on = onlineEndpoint();
@@ -271,6 +303,42 @@ function sse(req: IncomingMessage, res: ServerResponse, url: URL) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   try {
+    // ---- PIN lock ----
+    if (url.pathname === "/api/lock/status") return send(res, 200, { configured: vault.configured, unlocked: unlocked && validSession(req), runtimeReady: unlocked });
+    if (url.pathname === "/api/lock/setup" && req.method === "POST") {
+      const { pin } = await readBody(req);
+      const cipher = await vault.setup(String(pin ?? ""));
+      if (!unlocked) await boot(cipher);
+      startSession(res);
+      return send(res, 200, { ok: true });
+    }
+    if (url.pathname === "/api/lock/unlock" && req.method === "POST") {
+      const { pin } = await readBody(req);
+      try {
+        const cipher = await vault.unlock(String(pin ?? ""));
+        if (!unlocked) await boot(cipher);
+      } catch (e) {
+        return send(res, 401, { error: { code: "AUTH_FAILURE", message: (e as Error).message } });
+      }
+      startSession(res);
+      return send(res, 200, { ok: true });
+    }
+    if (url.pathname === "/api/lock/lock" && req.method === "POST") {
+      const t = cookieOf(req);
+      if (t) sessions.delete(t);
+      res.setHeader("set-cookie", "biruni_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+      return send(res, 200, { ok: true });
+    }
+    if (url.pathname.startsWith("/api/") && url.pathname !== "/api/whatsapp/webhook") {
+      if (!unlocked || !validSession(req)) return send(res, 401, { error: { code: "LOCKED", message: vault.configured ? "Locked: enter your PIN" : "Set a PIN first" } });
+    }
+    if (url.pathname === "/api/whatsapp/webhook" && !unlocked) return send(res, 503, { error: { code: "LOCKED", message: "Biruni is locked" } });
+    if (url.pathname === "/api/lock/change" && req.method === "POST") {
+      const { oldPin, newPin } = await readBody(req);
+      const { from, to, vaultRow } = await vault.prepareChange(String(oldPin ?? ""), String(newPin ?? ""));
+      const rows = b.store.reencrypt(from, to, vaultRow);
+      return send(res, 200, { ok: true, reencrypted: rows });
+    }
     if (url.pathname === "/api/events") return sse(req, res, url);
     if (url.pathname === "/api/feedback.csv") {
       res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="biruni-feedback.csv"' });
@@ -315,15 +383,18 @@ const server = createServer(async (req, res) => {
   }
 });
 
-void b.mcpClients.connectAll();
-void endpointChain(true).catch(() => {}); // warm-up: resolve the model + local health before the first message
-b.autopilot.start(); // L4: watches every active trip every AUTOPILOT_TICK_MS (default 60s)
+// First run: optional initial PIN from the local .env (never commit it).
+if (!vault.configured && process.env.BIRUNI_INITIAL_PIN) {
+  void vault
+    .setup(process.env.BIRUNI_INITIAL_PIN)
+    .then(() => console.log("PIN set from BIRUNI_INITIAL_PIN. Open the app and enter it to unlock."))
+    .catch((e) => console.error(`BIRUNI_INITIAL_PIN rejected: ${e.message}`));
+}
 
 server.listen(config.port, () => {
-  console.log(`Biruni API on http://localhost:${config.port}  (providers: ${config.providerMode}, undo window: ${config.undoWindowMs / 1000}s, db: ${config.dbPath})`);
-  if (b.rehydrated) console.log(`Rehydrated ${b.rehydrated} open undo window(s) from the database`);
+  console.log(`Biruni on http://localhost:${config.port}  (providers: ${config.providerMode}, db: ${config.dbPath}) — ${vault.configured ? "LOCKED: open the app and enter your PIN" : "first run: open the app to set a PIN"}`);
 });
 
-const shutdown = () => server.close(() => (b.shutdown(), process.exit(0)));
+const shutdown = () => server.close(() => (unlocked && b.shutdown(), vault.close(), process.exit(0)));
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

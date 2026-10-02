@@ -2,6 +2,7 @@
 // format (networkx node-link JSON: nodes / links / hyperedges, with
 // community, relation, confidence and source fields), so graphify's report and
 // graph.html tooling can read it. Shared by every chat.
+import { createHash } from "node:crypto";
 import type { Store } from "../../packages/db";
 import { nowIso } from "../../packages/shared";
 import { normalize, score, wordMatch } from "../../packages/shared/fuzzy";
@@ -51,7 +52,8 @@ const COMMUNITIES: Record<NodeType, [number, string]> = {
 };
 
 export const slug = (s: string) => s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9ऀ-ॿ]+/g, "_").replace(/^_|_$/g, "").slice(0, 60) || "x";
-export const nodeId = (type: NodeType, label: string) => `${type}_${slug(label)}`;
+// Opaque ids: row ids/index columns are not encrypted, so they must not contain the fact itself.
+export const nodeId = (type: NodeType, label: string) => `${type}_${createHash("sha256").update(slug(label)).digest("hex").slice(0, 16)}`;
 
 export class MemoryGraph {
   private cache?: { nodes: MemNode[]; links: MemLink[] };
@@ -74,7 +76,7 @@ export class MemoryGraph {
 
   link(source: string, target: string, relation: string, from: string, confidence: MemLink["confidence"] = "EXTRACTED", score = 1): MemLink {
     const rel = slug(relation) || "related_to";
-    const id = `${source}__${rel}__${target}`;
+    const id = `L_${createHash("sha256").update(`${source}|${rel}|${target}`).digest("hex").slice(0, 24)}`;
     const prev = this.store.get<MemLink>("memory_links", id);
     const link: MemLink = prev
       ? { ...prev, weight: prev.weight + 1, confidence_score: Math.max(prev.confidence_score, score) }

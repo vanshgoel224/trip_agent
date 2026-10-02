@@ -28,10 +28,10 @@ Requires Node ≥ 22.5. Persistence uses the built-in `node:sqlite`, which is st
 
 ```bash
 npm install
-cp .env.example .env   # put GEMINI_API_KEY (or ONLINE_MODEL_API_KEY) in it; .env is git-ignored
-npm test          # 52 tests: authority, payments, idempotency, recovery, restart, chats, memory, expenses, sensors
+cp .env.example .env   # set GEMINI_API_KEY (or ONLINE_MODEL_API_KEY) and BIRUNI_INITIAL_PIN; .env is git-ignored
+npm test          # 60 tests: authority, payments, idempotency, recovery, restart, chats, memory, expenses, sensors
 npm run demo      # CLI walkthrough of every scenario (short undo window)
-npm start         # API + demo UI on http://localhost:8787 (30s undo window)
+npm start         # API + UI on http://localhost:8787 — starts LOCKED; enter your PIN
 npm run models:check   # ping Nemotron (needs ONLINE_MODEL_API_KEY) and local Qwen/Ollama
 ```
 
@@ -132,6 +132,42 @@ and returned 503 "high demand" during testing, so it is not the default.
 ollama pull qwen3:4b && ollama serve       # on the phone/laptop, for the offline model
 npm run models:check
 ```
+
+## Security: PIN lock and encryption at rest
+
+- **Every stored record** (chats, memory, trips, deals, payments, feedback and the rest) is encrypted with AES-256-GCM. The key is derived from your PIN with scrypt (N=2^17, about 0.3 s per attempt) and lives only in RAM. The PIN is never stored.
+- **Opaque IDs:** the database's row ids and index columns are opaque. Memory ids are hashes, so they can't leak content.
+- **Boots locked:** the server starts locked, and the runtime, autopilot and MCP connections don't load until the PIN is entered.
+- **First run:** you set a PIN in the app, or it's taken from `BIRUNI_INITIAL_PIN` in your local `.env`. Any existing plaintext data is encrypted at that point.
+- **Sessions:** every API call and the live event stream need an unlock session. That's an HttpOnly, SameSite=Strict cookie that expires after 30 idle minutes (`LOCK_IDLE_MIN`).
+- **🔒 Lock** locks the screen. Connections → **Change PIN** re-encrypts everything in a single transaction.
+- **No lockout after wrong PINs** (your choice).
+
+Limits, bluntly:
+- A 4-digit PIN has 10,000 combinations. With a copy of the database file, an attacker can try them all offline in under an hour despite scrypt. Use 6 or more digits, or a password, if the file could be stolen.
+- While unlocked, the key is in the server's memory; locking the screen doesn't remove it, which is what lets the autopilot keep running. Only a server restart does.
+- `.env` (API keys) and exported `memory-out/` files are **not** encrypted.
+
+## Negotiator: hotels, taxis, autos
+
+The 🤝 chat negotiates and books for you in the other person's language: Tamil, Kannada, Hindi, Konkani and others.
+- **You set** the target price and a **maximum**. Biruni opens below the target and concedes on a fixed, deterministic schedule. It accepts automatically only within your max, takes a stated "final price" if that's within your max, and walks away politely above it. The model only reads the other person's message (price, yes/no, "final") and phrases the next line. It can never choose a price.
+- **It understands** prices in Indic digits (१२००, ௧௨௦௦, ೫೦೦), "1.5k", and numbers written as words (e.g. இரண்டாயிரத்து இருநூறு = 2,200; tested live).
+- **Hotels** go negotiate → agree → confirm the details → **recorded** in trip plans, memory and Google Calendar if connected. Taxis and autos are recorded on agreement.
+- **Channels:**
+  - **Relay** works today: the line to say is shown in their script with pronunciation, 🔊 speaks it in their language, and 🎤 captures their reply.
+  - **WhatsApp Business Cloud API** works with `WHATSAPP_*` keys. The inbound webhook verifies Meta's signature. WhatsApp's 24-hour rule means first contact needs an approved template.
+  - **Phone calls and SMS** need a telephony provider (Exotel, Twilio or a Gnani voice bot). They report "not connected" rather than pretending.
+- **Biruni never pays in a negotiation**; you pay the person directly.
+
+## Model fallback chain
+
+Each reply tries these in order:
+1. **Online model:** Nemotron, or Gemini as the stand-in.
+2. **Local Qwen** through Ollama, if it answers a 0.8 s health check.
+3. **Deterministic rules**, which still handle disruptions, undo, approvals and status.
+
+If the online model fails mid-turn (a quota hit, say), local Qwen continues *the same turn*. `MODEL_PRIMARY=local` puts Qwen first. Local Qwen only works when Biruni runs on your own machine with `ollama serve` and `ollama pull qwen3:4b` (check that tag exists in Ollama's library); this cloud container can't reach it.
 
 ## L4 autopilot and critical thinking
 
@@ -255,17 +291,23 @@ These are my calls. Review them before freeze.
 - **Vendor checks:** minimum rating 3.5, at least 10 reviews, pickup within 2 km, quote no more than 1.5× the reference fare, and no fraud flags. Required for the `LOCAL_TRANSPORT` rung.
 - **Offline:** only `LOGGED_CASH` can execute, and voice falls back to device TTS.
 
-## What is not built
+## What is not built (once you add keys, these remain)
 
-- **No live rail has been exercised with a real account.** See the table above. Expect field-name fixes the first time each one runs.
-- **No autonomous Pine Labs debit.** Live charges become payment links (see above).
-- **No transport booking API.** Alternatives and PNRs are simulated for every city pair.
-- **The Qwen offline model isn't on a phone.** It's reached through a local Ollama server, which can't be reached from the cloud container. `apps/phone-offline/` is the older Python offline agent, not integrated.
-- **Not in the UI:** Setu consent creation exists only as an API endpoint (`POST /api/aa/consent`).
-- **Free Gemini quota is small.** Bursts hit HTTP 429; Biruni retries once, then answers from the tool results.
-- **No user authentication on `/api`.** It's single-user; add auth before exposing it anywhere.
-- **Group-leader policy, Redis, Postgres runtime.** The Prisma schema is valid, but the app runs on SQLite.
-- `graphify-out/` describes the old Python layout and is stale.
+| Gap | Why | What closes it |
+|---|---|---|
+| Live rails never run against real accounts | no keys during development | run each with its key; expect field-name fixes |
+| Pine Labs can't debit you autonomously | gateways need a mandate or pre-auth | a Pine Labs mandate product (the design's "Grantex authority") |
+| No real bus/train/flight inventory or booking | no API wired; alternatives and PNRs are simulated | an aggregator API (bus, IRCTC or flight partner) |
+| Delhivery waybill/shipment creation | request format isn't public | Delhivery One developer portal access |
+| Phone calls and SMS for the negotiator | needs a telephony provider | Exotel, Twilio, or a Gnani voice-bot account |
+| WhatsApp cold outreach | WhatsApp's 24-hour rule | an approved message template |
+| Operator status feed for the autopilot | simulated | a real operator, IRCTC or bus-aggregator status API |
+| On-phone Qwen 4B | runs through Ollama on a computer, not inside the phone app | a native mobile build (llama.cpp or MLC) |
+| Native phone app | it's a web app; phone sensors need HTTPS | a PWA served over HTTPS, or Capacitor/React Native |
+| Multi-user, accounts, cloud sync | single user, one SQLite file | auth plus Postgres (the Prisma schema exists) |
+| Translation quality in low-resource languages | depends on the model | a native-speaker review, and a stronger model for those languages |
+| Crash detection | a heuristic | proper validation on real devices |
+| `graphify-out/` | describes the old Python code | rerun graphify |
 
 ## Layout
 
