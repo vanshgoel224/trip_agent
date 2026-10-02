@@ -49,3 +49,15 @@ test("expired fares can't be booked", async () => {
   s.put("offers", o.offerId, { ...o, expiresAt: new Date(Date.now() - 1000).toISOString() });
   await assert.rejects(hub.book({ offerId: o.offerId, travellers: ["A B"] }), /expired/);
 });
+
+test("re-search returns the same offer ids; no 'undefined' names for any seed", async () => {
+  const hub = new PartnerHub(new Store());
+  const a = await hub.search({ kind: "rail", from: "Madgaon", to: "Pune", date: day });
+  const b = await hub.search({ kind: "rail", from: "Madgaon", to: "Pune", date: day });
+  assert.deepEqual(a.map((o) => o.offerId), b.map((o) => o.offerId));
+  for (const kind of ["rail", "bus", "flight", "hotel"] as const)
+    for (let d = 1; d <= 25; d++) {
+      const date = new Date(Date.now() + d * 86400_000).toISOString().slice(0, 10);
+      for (const o of await hub.search({ kind, from: "Delhi", to: "Leh", city: "Manali", date })) assert.ok(!/undefined/.test(`${o.title} ${o.className} ${o.operator}`), `${kind} ${date}: ${o.title} / ${o.className}`);
+    }
+});

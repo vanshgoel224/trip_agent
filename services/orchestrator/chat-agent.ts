@@ -9,7 +9,7 @@ import type { Store } from "../../packages/db";
 import { classifyDisruption } from "../../packages/policy";
 import { inr, nowIso } from "../../packages/shared";
 import { bus } from "../../packages/events";
-import { chat as chatOnceText, GENERIC_SYSTEM, chatWithTools, endpointChain, extractJson, rulesProposal, type ChatMessage, type ToolSpec } from "../models";
+import { chat as chatOnceText, GENERIC_SYSTEM, chatWithTools, endpointChain, hedgedChat, extractJson, rulesProposal, type ChatMessage, type ToolSpec } from "../models";
 import type { BookingAgent } from "../agents/booking";
 import type { TravelAgent } from "../agents/travel";
 import type { FinanceAgent } from "../agents/finance";
@@ -42,6 +42,9 @@ export const READ_ONLY_TOOLS = new Set([
 const APPROVAL_WORDS = /\b(yes|yeah|yep|haan|ha|han|ji|approve|approved|go ahead|book it|do it|ok|okay|theek|thik|kar do|karo|confirm|sure)\b/i;
 const NEGATION_WORDS = /\b(not yet|don'?t|do not|dont|wait|hold on|hold off|no|nope|nahi|nahin|mat|abhi nahi|ruko|later|cancel that)\b/i;
 /** Explicit traveller consent in their own latest words: a yes, and no negation anywhere. */
+/** Undo only when the traveller actually asks for it ("not yet" or "let me think" is not undo). */
+const UNDO_WORDS = /\b(undo|revert|reverse it|cancel (it|that|this|the booking|the bus|the ticket)|don'?t (want|need) (it|this|that)|wapas|ruk(o|ja)|mat karo|nahi chahiye|band karo)\b/i;
+const explicitUndo = (t: string) => UNDO_WORDS.test(t);
 const explicitYes = (t: string) => APPROVAL_WORDS.test(t) && !NEGATION_WORDS.test(t) && rulesProposal(t).intent !== "DECLINE";
 
 const fn = (name: string, description: string, properties: Record<string, unknown> = {}, required: string[] = []): ToolSpec => ({
@@ -112,7 +115,7 @@ export const CHAT_TOOLS: ToolSpec[] = [
   fn("delivery_list", "List the traveller's Delhivery bookings."),
 
   // ---- travel booking (TBO / Agoda / EaseMyTrip; simulated until partner keys) ----
-  fn("travel_search", "Search flights, trains, buses or hotels. Returns offers with offerId, price in ₹, times, class, refundability.", {
+  fn("travel_search", "Search flights, trains, buses or hotels. Returns offers sorted cheapest first, each with a stable offerId (the same search returns the same ids), price in ₹, times, class, refundability. Don't search again just to book: use an offerId you already have.", {
     kind: { type: "string", enum: ["flight", "rail", "bus", "hotel"] }, from: str("Origin city (not for hotels)"), to: str("Destination city (not for hotels)"),
     city: str("Hotel city"), date: str("YYYY-MM-DD (check-in for hotels)"), nights: { type: "number", description: "Hotels only" },
     passengers: { type: "number", description: "Default 1" }, max_price: { type: "number", description: "Optional ₹ cap" },
@@ -205,21 +208,10 @@ How to think (critical thinking — do this silently, show only the conclusion):
   async respond(chat: Chat, text: string, hint?: string, opts: { ephemeral?: boolean } = {}): Promise<{ reply: string; source: string; tools: string[] } | undefined> {
     const tripId = chat.tripId;
     const online = tripId ? getRuntime(this.d.store, tripId).online : true;
-    let chain = await endpointChain(online);
-    // Tool-less models (Hermes with its tools off) can't act: actions on a trip go to the
-    // deterministic rules instead (returning undefined hands the turn to them).
-    const actionLike = !!tripId && ACTION_INTENTS.has(rulesProposal(text).intent);
-    if (actionLike) chain = chain.filter((e) => e.tools !== false);
-    if (!chain.length) return undefined;
-    let tier = 0;
-    let ep = chain[0];
-
     const o = this.d.orchestrator;
     const used: string[] = [];
     const notes: string[] = hint ? [hint] : [];
-    if (ep.tools === false) notes.push("You have no tools in this session. Answer only from the context above; never claim you booked, saved, paid or looked anything up.");
-
-    // Deterministic safety pre-check in every chat: escalate before asking any model.
+    // Deterministic safety pre-check in every chat, before (and without) any model.
     if (tripId && classifyDisruption(text) === "SAFETY") {
       const open = o.currentIncident(tripId);
       if (!(open && open.classification === "SAFETY" && open.step !== "CLOSED")) {
@@ -228,9 +220,19 @@ How to think (critical thinking — do this silently, show only the conclusion):
         notes.push(`Biruni already escalated this as SAFETY: autonomous actions stopped, traveller told to call 112${inc.pendingApproval ? `, and asked: "${inc.pendingApproval.message}"` : ""}. Do not call report_disruption again.`);
       }
     }
+    let chain = await endpointChain(online);
+    // Tool-less models (Hermes with its tools off) can't act: actions on a trip go to the
+    // deterministic rules instead (returning undefined hands the turn to them).
+    const actionLike = !!tripId && ACTION_INTENTS.has(rulesProposal(text).intent);
+    if (actionLike) chain = chain.filter((e) => e.tools !== false);
+    if (!chain.length) return undefined;
+    let tier = 0;
+    let ep = chain[0];
+    if (ep.tools === false) notes.push("You have no tools in this session. Answer only from the context above; never claim you booked, saved, paid or looked anything up.");
 
     const trip = tripId ? o.trip(tripId) : undefined;
-    const history: ChatMessage[] = this.d.chats
+    // /btw is a standalone side question: no history, so it can't drift into earlier topics.
+    const history: ChatMessage[] = opts.ephemeral ? [] : this.d.chats
       .messages(chat.chatId)
       .slice(chat.mode === "translate" ? -5 : -13, -1)
       .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text }));
@@ -252,17 +254,14 @@ How to think (critical thinking — do this silently, show only the conclusion):
     try {
       for (let step = 0; step < MAX_STEPS; step++) {
         let msg: ChatMessage;
-        for (;;) {
-          try {
-            msg = await chatWithTools(ep, messages, tools, Number(process.env.MODEL_TIMEOUT_MS ?? 20000));
-            break;
-          } catch (e) {
-            // Fallback chain: next model (e.g. Gemini quota hit → local Qwen) continues the same turn.
-            if (++tier >= chain.length) throw e;
-            bus.emitEvent({ tripId: tripId ?? "*", agent: "orchestrator", type: "MODEL", detail: `${ep.model} failed (${String((e as Error).message).slice(0, 80)}); falling back to ${chain[tier].model}` });
-            ep = chain[tier];
-          }
-        }
+        // Speed: race the next model if this one is slow; a failure (e.g. Gemini quota)
+        // moves the same turn to the next model at once.
+        const snapshot = [...messages];
+        const r = await hedgedChat(chain, tier, (e) => chatWithTools(e, snapshot, tools, Number(process.env.MODEL_TIMEOUT_MS ?? 20000)), undefined, (failed, next, err) =>
+          bus.emitEvent({ tripId: tripId ?? "*", agent: "orchestrator", type: "MODEL", detail: `${failed.model} failed (${String((err as Error).message).slice(0, 80)})${next ? `; trying ${next.model}` : ""}` }),
+        );
+        msg = r.msg;
+        if (r.index !== tier) (tier = r.index), (ep = chain[tier]);
         messages.push(msg);
         if (!msg.tool_calls?.length) {
           let reply = (msg.content ?? "").trim() || "Done.";
@@ -335,7 +334,8 @@ Draft reply:
 ${draft}
 Check: every number, price, time, name, booking/PNR/AWB, place and claim of an action done must be supported by the tool results. Flag contradictions, invented details, wrong arithmetic, missing important caveats (e.g. "simulated", errors, blocked actions). Keep the draft's language and tone.
 Return ONLY JSON: {"ok": true|false, "issues": ["..."], "revised": "<corrected full reply, only if ok is false>"}`;
-    const raw = await chatOnceText(ep, prompt, 15_000, GENERIC_SYSTEM);
+    // Speed: the self-check is a bonus. If it can't answer within a few seconds, skip it.
+    const raw = await chatOnceText(ep, prompt, Number(process.env.CRITIC_TIMEOUT_MS ?? 5000), GENERIC_SYSTEM);
     const j = extractJson(raw) as { ok?: boolean; issues?: string[]; revised?: string };
     return { ok: j.ok !== false, issues: Array.isArray(j.issues) ? j.issues.map(String).slice(0, 5) : [], revised: typeof j.revised === "string" && j.revised.trim().length > 5 ? j.revised.trim() : undefined };
   }
@@ -577,6 +577,7 @@ Return ONLY JSON: {"ok": true|false, "issues": ["..."], "revised": "<corrected f
         return { ok: true };
       }
       case "undo_last_action": {
+        if (!explicitUndo(userText)) return { error: "Not undone: the traveller didn't ask to undo. Hesitation like 'not yet' or 'let me think' means keep the booking and wait. Tell them it's still booked and how long the undo window has left." };
         const cur = inc();
         if (!cur || cur.step !== "UNDO_WINDOW_OPEN") return { error: "Nothing to undo right now (window closed or no autonomous action)" };
         const ok = await o.undo(cur.incidentId);

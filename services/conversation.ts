@@ -1,13 +1,14 @@
 // Entry point for every chat message: persists the turn, runs the chat agent
 // (LLM + tools) and falls back to the deterministic rules when no model is
 // reachable. Also hosts voice translation (STT → translate → TTS).
+import { classifyDisruption } from "../packages/policy";
 import type { Store } from "../packages/db";
 import type { Orchestrator } from "./orchestrator";
 import type { ChatAgent } from "./orchestrator/chat-agent";
 import type { Chats, ChatMode, CustomSpec } from "./orchestrator/chats";
 import type { MemoryGraph } from "./memory";
 import type { VoiceAgent } from "./agents/voice";
-import { chat as modelChat, GENERIC_SYSTEM, endpointChain, geminiStrongModel, type ModelRouter } from "./models";
+import { rulesProposal, chat as modelChat, GENERIC_SYSTEM, endpointChain, geminiStrongModel, type ModelRouter } from "./models";
 import { bestMatch, containsFuzzy, editDistance, normalize, rank } from "../packages/shared/fuzzy";
 
 // Languages for translation. Gnani (voice) covers the first ten; the rest use
@@ -56,6 +57,23 @@ const SCRIPTS: Record<string, RegExp> = {
   kn: /[\u0C80-\u0CFF]/, ml: /[\u0D00-\u0D7F]/, ur: /[\u0600-\u06FF]/, ks: /[\u0600-\u06FF]/, sd: /[\u0600-\u06FF]/,
   mni: /[\u0980-\u09FF\uABC0-\uABFF]/, sat: /[\u1C50-\u1C7F]/, en: /[A-Za-z]/,
 };
+/** "… to Konkani", "in Tamil" → language code. */
+export function targetFromText(text: string): string | undefined {
+  const m = text.match(/\b(?:to|in|into)\s+([\p{L}]+)\s*[?.!]*\s*$/iu) ?? text.match(/\btranslate\s+(?:to|into)\s+([\p{L}]+)/iu) ?? text.match(/([\p{L}]+)\s+(?:mein|me|main)\b[\s\p{L}]*[?.!]*\s*$/iu);
+  const code = m ? resolveLanguage(m[1]) : undefined;
+  return code && code !== "en-IN" ? code : m && /english/i.test(m[1]) ? "en-IN" : code;
+}
+const stripInstruction = (t: string) => t.replace(/\b(please\s+)?translate\b/i, "").replace(/\b(?:to|in|into|mein|me)\s+[\p{L}]+\s*[?.!]*\s*$/iu, "").replace(/[\s,.]+$/, "").trim() || t;
+const INDIC = /[\u0900-\u0DFF\u0600-\u06FF]/g;
+/** No letter in the target script, or more letters of other Indic scripts than of the target. */
+export function wrongScript(text: string, code: string): boolean {
+  const re = SCRIPTS[code.split("-")[0]];
+  if (!re || code.startsWith("en")) return false;
+  const native = [...text].filter((ch) => re.test(ch)).length;
+  const otherIndic = [...(text.match(INDIC) ?? [])].filter((ch) => !re.test(ch)).length;
+  return native === 0 || otherIndic > native;
+}
+
 /** Share of letters in the expected script (1 = all correct). */
 export function scriptScore(text: string, code: string): number {
   const re = SCRIPTS[code.split("-")[0]];
@@ -152,11 +170,26 @@ export class Conversation {
       ? `Translator settings from the app: source ${hints.sourceLanguage && hints.sourceLanguage !== "auto" ? langName(hints.sourceLanguage) : "auto-detect"}, target ${langName(hints.targetLanguage)} (use this target unless the latest message names another language).`
       : undefined;
     let out = await this.d.chatAgent.respond(chat, clean, hint);
+    // Translator: if the model answered in the wrong script (seen live: Konkani came back in
+    // Malayalam letters), redo it through the checked translation path.
+    if (out && chat.mode === "translate") {
+      const target = hints.targetLanguage && hints.targetLanguage !== "auto" ? hints.targetLanguage : targetFromText(clean);
+      if (target && wrongScript(out.reply, target)) {
+        const fixed = await this.translate(stripInstruction(clean), "auto", target).catch(() => undefined);
+        if (fixed?.translation && !wrongScript(fixed.translation, target)) out = { ...out, reply: [fixed.translation, fixed.pronunciation].filter(Boolean).join("\n"), source: `${out.source} · script-corrected`, tools: [...out.tools, "translate(checked)"] };
+      }
+    }
     if (!out) {
       // No model reachable: deterministic rules (disruption/undo/approve/status) still work.
-      if (chat.tripId) {
+      const proposal = rulesProposal(clean);
+      const tripAction = ["REPORT_DISRUPTION", "UNDO", "APPROVE", "DECLINE", "VERIFIED_WAY_HOME", "STATUS"].includes(proposal.intent) || classifyDisruption(clean) === "SAFETY";
+      if (chat.tripId && (tripAction || chat.mode === "recovery")) {
         const r = await this.d.orchestrator.handleMessage(chat.tripId, clean);
         out = { reply: r.reply, source: "RULES", tools: [] };
+      } else if (chat.tripId || this.d.models) {
+        // Don't pretend: say the AI is unavailable and what still works.
+        const why = this.d.models?.describe?.().lastError ? " (it may be rate-limited)" : "";
+        out = { reply: `My AI model isn't answering right now${why}, so I can't do that one yet. Cancellations, undo, trip status, SOS and drop alerts still work. Please try again in a minute.`, source: "RULES", tools: [] };
       } else {
         out = { reply: "My language model isn't connected (set GEMINI_API_KEY or ONLINE_MODEL_API_KEY). Without it I can only handle trip disruptions.", source: "RULES", tools: [] };
       }

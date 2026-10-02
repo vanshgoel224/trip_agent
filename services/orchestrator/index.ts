@@ -2,6 +2,7 @@
 // the L4 flag. It never moves money or writes the ledger itself — it routes
 // work to specialists, which go through MCP.
 //   message → intent → state → plan → agent selection → tool call → result → state update → next action
+import { classifyDisruption } from "../../packages/policy";
 import type { Incident, Itinerary, Location, Traveller, TripState } from "../../packages/domain";
 import type { Store } from "../../packages/db";
 import { BiruniError, config, id, nowIso } from "../../packages/shared";
@@ -109,6 +110,14 @@ export class Orchestrator {
   async handleMessage(tripId: string, text: string) {
     const trip = this.trip(tripId);
     this.memory.push(tripId, { role: "traveller", text, at: nowIso() });
+    // Safety first, deterministic, even with no model and even if another incident is open.
+    if (classifyDisruption(text) === "SAFETY") {
+      const open = this.currentIncident(tripId);
+      if (!(open && open.classification === "SAFETY" && open.step !== "CLOSED")) await this.reportDisruption(tripId, text);
+      const reply = "If you're in danger, call 112 now. I've stopped all automatic bookings and payments. Move to a busy, well-lit place if you can. Use the red SOS button to alert your trip members and contacts with your location.";
+      this.memory.push(tripId, { role: "biruni", text: reply, at: nowIso() });
+      return { intent: "REPORT_DISRUPTION" as const, source: "RULES" as const, reply, state: this.snapshot(tripId) };
+    }
     const rt = getRuntime(this.store, tripId);
     const proposal = await this.d.models.propose(text, rt.online);
     const steps = plan(proposal.intent, trip, this.currentIncident(tripId));

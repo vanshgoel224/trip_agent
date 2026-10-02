@@ -15,10 +15,15 @@ import { containsFuzzy } from "../shared/fuzzy";
 
 // ---------- Disruption classification (spec §4.3) ----------
 
+// English words: substring + typo-tolerant ("acident", "harrased").
 const SAFETY_WORDS = [
   "accident", "injur", "hurt", "bleed", "assault", "harass", "attack", "unsafe", "threat",
-  "robbed", "stolen phone", "followed", "medical", "hospital", "emergency", "police", "sos",
+  "robbed", "stolen phone", "followed", "following me", "stalking", "stalker", "medical", "hospital", "emergency", "police", "sos",
+  "scared", "afraid", "in danger", "not safe", "molest", "kidnap", "drunk", "rash driv", "overspeeding", "chest pain", "can't breathe", "unconscious", "fainted",
 ];
+// Hindi / Hinglish: exact words only. Short romanised words collide under typo-matching
+// ("hoon" is one letter from "khoon"), so these never go through the fuzzy matcher.
+const SAFETY_EXACT = /(^|[^\p{L}])(peecha|pichha|picha kar|darr? lag|bachao|bachaao|madad karo|chot lagi|khoon nikal|khoon beh|chhed|ched raha|chhed raha|maar raha|maar diya|loot liya|loot gaya|pīchhā|पीछा|डर लग|बचाओ|मदद करो|चोट लगी|खून)([^\p{L}]|$)/iu;
 const ROUTE_WORDS = [
   "landslide", "flood", "road block", "road closed", "blocked", "bandh", "strike", "protest",
   "curfew", "diversion", "bridge",
@@ -31,7 +36,7 @@ const ROUTE_WORDS = [
 export function classifyDisruption(text: string, modelProposal?: DisruptionClass): DisruptionClass {
   // Case-insensitive, typo-tolerant ("acident", "UNSAFE", "harrased"). Safety errs towards escalating.
   const t = text.toLowerCase();
-  if (SAFETY_WORDS.some((w) => t.includes(w)) || containsFuzzy(text, SAFETY_WORDS.filter((w) => w.length >= 5)) || modelProposal === "SAFETY") return "SAFETY";
+  if (SAFETY_WORDS.some((w) => t.includes(w)) || SAFETY_EXACT.test(text) || containsFuzzy(text, SAFETY_WORDS.filter((w) => w.length >= 5)) || modelProposal === "SAFETY") return "SAFETY";
   if (ROUTE_WORDS.some((w) => t.includes(w)) || containsFuzzy(text, ROUTE_WORDS.filter((w) => w.length >= 5))) return "ROUTE_BLOCKED";
   return modelProposal ?? "LOGISTICAL";
 }

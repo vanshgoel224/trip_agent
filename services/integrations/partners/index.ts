@@ -92,6 +92,8 @@ export class Simulator implements Partner {
     const pax = Math.max(1, Math.min(9, Math.round(q.passengers ?? 1)));
     const expires = new Date(Date.now() + 15 * 60_000).toISOString();
     const base = { partner: "simulator" as const, kind: q.kind, date: q.date, simulated: true, expiresAt: expires };
+    // Same search → same offer ids, so "book the cheapest one" still works after a re-search.
+    const oid = (i: number) => `OFR-${(h(`${q.kind}|${q.from ?? ""}|${q.to ?? ""}|${q.city ?? ""}|${q.date}|${q.nights ?? 1}|${pax}|${i}`) >>> 0).toString(16).toUpperCase().padStart(8, "0")}`;
     const out: Offer[] = [];
     if (q.kind === "hotel") {
       const city = q.city ?? q.to ?? "";
@@ -100,7 +102,7 @@ export class Simulator implements Partner {
         const s = h(`${city}|${q.date}|${i}`);
         const brand = pick(HOTELS, s);
         const perNight = roundTo(800 + (s % 5200) * (brand === "Taj Vivanta" ? 1.8 : 1), 50);
-        out.push({ ...base, offerId: id("OFR"), operator: brand, city, title: `${brand} ${city}`, nights, className: pick(["Standard room", "Deluxe room", "Dorm bed", "Suite"], s >> 3), priceInr: perNight * nights, perPerson: false, refundable: s % 3 !== 0, seatsLeft: 1 + (s % 6) });
+        out.push({ ...base, offerId: oid(i), operator: brand, city, title: `${brand} ${city}`, nights, className: pick(["Standard room", "Deluxe room", "Dorm bed", "Suite"], s >>> 3), priceInr: perNight * nights, perPerson: false, refundable: s % 3 !== 0, seatsLeft: 1 + (s % 6) });
       }
     } else {
       if (!q.from || !q.to) throw new BiruniError("INVALID_REQUEST", "from and to are needed");
@@ -119,14 +121,14 @@ export class Simulator implements Partner {
           minutes = Math.round((km / 45) * 60);
           fare = 250 + km * 1.4 + (s % 400);
           operator = pick(BUSES, s);
-          cls = pick(["AC Sleeper", "Volvo AC Seater", "Non-AC Sleeper"], s >> 4);
+          cls = pick(["AC Sleeper", "Volvo AC Seater", "Non-AC Sleeper"], s >>> 4);
         } else {
           minutes = Math.round((km / 55) * 60);
-          cls = pick(["Sleeper (SL)", "AC 3 Tier (3A)", "AC 2 Tier (2A)", "AC Chair Car (CC)"], s >> 4);
+          cls = pick(["Sleeper (SL)", "AC 3 Tier (3A)", "AC 2 Tier (2A)", "AC Chair Car (CC)"], s >>> 4);
           fare = 120 + km * ({ "Sleeper (SL)": 0.55, "AC 3 Tier (3A)": 1.5, "AC 2 Tier (2A)": 2.2, "AC Chair Car (CC)": 1.3 } as Record<string, number>)[cls];
-          operator = `${10000 + (s % 89999)} ${pick(TRAINS, s >> 2)}`;
+          operator = `${10000 + (s % 89999)} ${pick(TRAINS, s >>> 2)}`;
         }
-        out.push({ ...base, offerId: id("OFR"), operator, from: q.from, to: q.to, title: `${operator} ${q.from} → ${q.to}`, depart: hhmm(dep), arrive: hhmm(dep + minutes), className: cls, priceInr: roundTo(fare, 10) * pax, perPerson: false, refundable: s % 4 !== 0, seatsLeft: 1 + (s % 20) });
+        out.push({ ...base, offerId: oid(i), operator, from: q.from, to: q.to, title: `${operator} ${q.from} → ${q.to}`, depart: hhmm(dep), arrive: hhmm(dep + minutes), className: cls, priceInr: roundTo(fare, 10) * pax, perPerson: false, refundable: s % 4 !== 0, seatsLeft: 1 + (s % 20) });
       }
     }
     return out.filter((o) => !q.maxPrice || o.priceInr <= q.maxPrice).sort((a, b) => a.priceInr - b.priceInr);

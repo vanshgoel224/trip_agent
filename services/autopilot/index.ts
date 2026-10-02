@@ -107,7 +107,11 @@ export class Autopilot {
         if (this.once(tripId, `stale-${leg.legId}-${latest.at}`)) out.push(this.log({ tripId, signal: `${latest.status} for a leg that left >3h ago`, considered, decided: "IGNORE", why: "Stale: the departure is long past, acting now would not help" }));
         continue;
       }
-      if (busy(open)) continue; // recovery already running; don't stack incidents
+      if (busy(open)) {
+        // Recovery already running: don't stack a second one, but say so (once per report).
+        if (this.once(tripId, `busy-${leg.legId}-${latest.at}`)) out.push(this.log({ tripId, signal: `${latest.status} from ${latest.source}`, considered: [...considered, `recovery ${open!.incidentId} already at ${open!.step}`], decided: "WAIT", why: "A recovery for this trip is already in progress; the operator report is noted and the open recovery continues" }));
+        continue;
+      }
       if (latest.status === "DELAYED" && (latest.delayMin ?? 0) < DELAY_RECOVER_MIN) {
         if (this.once(tripId, `delay-${leg.legId}-${latest.delayMin}`)) {
           await this.d.voice.say(tripId, `Heads up: your ${leg.mode.toLowerCase()} ${leg.from}→${leg.to} is running about ${latest.delayMin} minutes late. No action needed yet; I'm watching it.`, { kind: "AUTOPILOT" });

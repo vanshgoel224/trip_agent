@@ -36,6 +36,7 @@ export const HERMES_DEFAULT = { baseUrl: "http://127.0.0.1:8642/v1", model: "her
 export const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
 let geminiModel: string | undefined = process.env.GEMINI_MODEL || undefined;
 let geminiStrong: string | undefined;
+let geminiAlternates: string[] | undefined;
 /** A stronger (slower) Gemini model for harder jobs, e.g. low-resource language translation. */
 export const geminiStrongModel = () => geminiStrong;
 
@@ -69,6 +70,10 @@ export async function resolveGeminiModel(apiKey: string, timeoutMs = 10000): Pro
   if (!pick) throw new Error("no usable Gemini text model for this key");
   geminiModel = pick;
   geminiStrong = byNewest.find((m) => /-flash$/.test(m)) ?? pick;
+  // Free-tier rate limits are per model: keep two more stable text models as same-key fallbacks.
+  // Speed first: other fast "flash-lite" versions before any full "flash" (which measured 14–17 s).
+  const stable = byNewest.filter((m) => m !== pick && !/preview|exp/.test(m));
+  geminiAlternates = [...stable.filter((m) => /-flash-lite$/.test(m)), ...stable.filter((m) => /-flash$/.test(m))].slice(0, 3);
   return { model: pick, available };
 }
 
@@ -96,6 +101,57 @@ export function offlineEndpoint(): Endpoint | undefined {
 }
 
 /** Pull the JSON object out of a reply, ignoring any <think>…</think> reasoning block. */
+// ---------- speed: cooldowns + hedging ----------
+// A model that returns 429 (rate limit) or 5xx is benched for a while so later turns
+// go straight to the next model instead of waiting on it again.
+const cooldown = new Map<string, number>();
+const epKey = (ep: Endpoint) => `${ep.baseUrl}|${ep.model}|${(ep.apiKey ?? "").slice(-6)}`;
+export function benchFor(ep: Endpoint, err: unknown) {
+  const msg = String((err as Error)?.message ?? err);
+  const code = Number(msg.match(/HTTP (\d{3})/)?.[1] ?? 0);
+  const hinted = Number(msg.match(/retryDelay"?:\s*"?(\d+(?:\.\d+)?)s/)?.[1] ?? 0) * 1000;
+  const ms = code === 429 ? Math.min(Math.max(hinted, 20_000), 120_000) : code >= 500 || /timed? ?out|aborted|fetch failed/i.test(msg) ? 10_000 : code === 401 || code === 403 ? 300_000 : code === 404 ? 3_600_000 : 0; // 404: model retired for this key
+  if (ms) cooldown.set(epKey(ep), Date.now() + ms);
+}
+export const benched = (ep: Endpoint) => (cooldown.get(epKey(ep)) ?? 0) > Date.now();
+
+/**
+ * Hedged call: start on chain[from]; if it hasn't answered in `hedgeMs`, start the
+ * next model too and take whichever answers first. A failure moves on at once.
+ * Returns the answer and which endpoint produced it.
+ */
+export async function hedgedChat<E extends Endpoint>(chain: E[], from: number, call: (ep: E) => Promise<ChatMessage>, hedgeMs = Number(process.env.MODEL_HEDGE_MS ?? 2500), onFallback?: (failed: E, next: E | undefined, err: unknown) => void): Promise<{ msg: ChatMessage; index: number }> {
+  if (from >= chain.length) throw new Error("no model left in the chain");
+  return new Promise((resolve, reject) => {
+    let next = from, pending = 0, done = false, lastErr: unknown;
+    const launch = () => {
+      if (done || next >= chain.length) return;
+      const i = next++;
+      pending++;
+      const ep = chain[i];
+      const hedge = setTimeout(launch, hedgeMs); // slow → race the next model
+      call(ep).then(
+        (msg) => {
+          clearTimeout(hedge);
+          pending--;
+          if (!done) (done = true), resolve({ msg, index: i });
+        },
+        (err) => {
+          clearTimeout(hedge);
+          pending--;
+          lastErr = err;
+          benchFor(ep, err);
+          if (done) return;
+          onFallback?.(ep, chain[next], err);
+          if (next < chain.length) launch();
+          else if (pending === 0) (done = true), reject(lastErr);
+        },
+      );
+    };
+    launch();
+  });
+}
+
 export function extractJson(raw: string): unknown {
   const text = raw.replace(/<think>[\s\S]*?<\/think>/gi, "");
   const end = text.lastIndexOf("}");
@@ -210,8 +266,25 @@ export async function localReachable(ep = offlineEndpoint()): Promise<boolean> {
  * If every model fails, callers fall back to deterministic rules.
  */
 export async function endpointChain(online: boolean): Promise<(Endpoint & { tier: "online" | "local" })[]> {
+  const all = await fullChain(online);
+  const fresh = all.filter((e) => !benched(e));
+  return fresh.length ? fresh : all; // everything benched: try anyway rather than give up
+}
+
+async function fullChain(online: boolean): Promise<(Endpoint & { tier: "online" | "local" })[]> {
   const user = currentProviders();
-  if (user?.some((p) => p.enabled !== false)) return userChain(user, online);
+  // The user's own providers go first; the server's defaults stay behind them as a backup,
+  // so one bad or exhausted key never leaves the user with rules only.
+  if (user?.some((p) => p.enabled !== false)) {
+    const mine = await userChain(user, online);
+    if (process.env.BYOK_SERVER_FALLBACK === "off") return mine;
+    const seen = new Set(mine.map((e) => `${e.baseUrl}|${e.model}`));
+    return [...mine, ...(await envChain(online)).filter((e) => !seen.has(`${e.baseUrl}|${e.model}`))];
+  }
+  return envChain(online);
+}
+
+async function envChain(online: boolean): Promise<(Endpoint & { tier: "online" | "local" })[]> {
   const out: (Endpoint & { tier: "online" | "local" })[] = [];
   const local = offlineEndpoint();
   const localOk = local ? await localReachable(local) : false;
@@ -227,8 +300,10 @@ export async function endpointChain(online: boolean): Promise<(Endpoint & { tier
     }
   }
   const preferLocal = (process.env.MODEL_PRIMARY ?? "online") === "local" || !online;
+  if (remote?.baseUrl === GEMINI_BASE_URL && !process.env.GEMINI_MODEL && geminiAlternates === undefined) await resolveGeminiModel(remote.apiKey!).catch(() => (geminiAlternates = []));
+  const alternates = remote?.baseUrl === GEMINI_BASE_URL && !process.env.GEMINI_MODEL ? (geminiAlternates ?? []).map((m) => ({ ...remote!, model: m })) : [];
   if (preferLocal && local && localOk) out.push({ ...local, tier: "local" });
-  if (remote) out.push({ ...remote, tier: "online" });
+  if (remote) out.push({ ...remote, tier: "online" }, ...alternates.map((a) => ({ ...a, tier: "online" as const })));
   if (!preferLocal && local && localOk) out.push({ ...local, tier: "local" });
   return out;
 }
@@ -279,7 +354,8 @@ export async function chatWithTools(ep: Endpoint, messages: ChatMessage[], tools
     // Honour the provider's suggested delay (Gemini sends retryDelay "Ns") when it fits.
     const hinted = Number(String(e).match(/retryDelay"?:\s*"?(\d+(?:\.\d+)?)s/)?.[1] ?? 0.7) * 1000;
     const wait = Math.min(Math.max(hinted, 700), 12_000);
-    if (left < wait + 2000) throw e;
+    // Speed first: a long provider-suggested wait means "go to the next model now".
+    if (wait > Number(process.env.MODEL_MAX_RETRY_WAIT_MS ?? 1500) || left < wait + 2000) throw e;
     await new Promise((r) => setTimeout(r, wait));
     return once(left - wait);
   }
@@ -315,9 +391,10 @@ export class ModelRouter {
 
   async propose(text: string, online: boolean): Promise<Proposal> {
     const chain = await endpointChain(online).catch(() => []);
-    for (const ep of chain.slice(0, 2)) {
+    // Classification is a small job and blocks recovery: one fast model, short timeout, else rules.
+    for (const ep of chain.slice(0, 1)) {
       try {
-        const raw = await chat(ep, text, this.timeoutMs);
+        const raw = await chat(ep, text, Math.min(this.timeoutMs, Number(process.env.PROPOSE_TIMEOUT_MS ?? 4000)));
         const p = ProposalSchema.parse(extractJson(raw));
         this.lastError = undefined;
         return { ...p, source: ep.tier === "online" ? "ONLINE_MODEL" : "OFFLINE_MODEL" };

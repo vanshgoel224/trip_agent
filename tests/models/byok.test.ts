@@ -20,6 +20,8 @@ const fake: Server = createServer((req, res) => {
     const j = body ? JSON.parse(body) : {};
     seen.push({ path, body: j, auth: String(req.headers.authorization ?? req.headers["x-api-key"] ?? "") });
     if (path.includes("/down/")) return json(500, { error: "down" });
+    if (path.includes("/limit/")) return json(429, { error: { message: "quota", details: [{ retryDelay: "33s" }] } });
+    if (path.includes("/slow/")) return void setTimeout(() => json(200, { choices: [{ message: { role: "assistant", content: "slow text" } }] }), 3000);
     if (path.includes("/anthropic/")) {
       const r = anthropicReplies.shift() ?? { stop_reason: "end_turn", content: [{ type: "text", text: "Claude says hi" }] };
       return json(200, { id: "msg_1", type: "message", role: "assistant", model: j.model, usage: { input_tokens: 1, output_tokens: 1 }, stop_sequence: null, ...r });
@@ -127,4 +129,26 @@ test("fallback: first BYOK provider down → next one answers the same turn", as
   assert.equal(r.message.text, "Claude says hi");
   assert.match(r.source, /claude-sonnet-5-5 \(fallback\)/);
   b.shutdown();
+});
+
+test("speed: a slow model is raced by the next one; a rate-limited one is benched for later turns", async () => {
+  const u = await base();
+  const { hedgedChat, chatWithTools, endpointChain, benched } = await import("../../services/models");
+  const slow = { provider: "custom" as const, apiKey: "k", baseUrl: `${u}/slow/v1`, model: "slowpoke", tools: true };
+  const fast = { provider: "custom" as const, apiKey: "k", baseUrl: `${u}/v1`, model: "quick", tools: true };
+  const t = Date.now();
+  const r = await hedgedChat([slow, fast], 0, (e) => chatWithTools(e, [{ role: "user", content: "hi" }], [], 10_000), 300);
+  assert.equal(r.index, 1, "the fast model won the race");
+  assert.ok(Date.now() - t < 1500, `answered in ${Date.now() - t} ms instead of ~3 s`);
+
+  const limited = { id: "l", provider: "custom" as const, apiKey: "k2", baseUrl: `${u}/limit/v1`, model: "limited" };
+  const backup = { id: "b", provider: "custom" as const, apiKey: "k3", baseUrl: `${u}/v1`, model: "backup" };
+  const t2 = Date.now();
+  const chain = await withModels([limited, backup], () => endpointChain(true));
+  const r2 = await hedgedChat(chain, 0, (e) => chatWithTools(e, [{ role: "user", content: "hi" }], [], 10_000), 5000);
+  assert.equal(chain[r2.index].model, "backup");
+  assert.ok(Date.now() - t2 < 1500, "429 with a 33 s retry hint moves on at once instead of waiting");
+  assert.ok(benched(chain[0]), "rate-limited model is benched");
+  const next = await withModels([limited, backup], () => endpointChain(true));
+  assert.deepEqual(next.map((e) => e.model), ["backup"], "next turn skips it entirely");
 });
