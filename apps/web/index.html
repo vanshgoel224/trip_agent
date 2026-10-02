@@ -11,7 +11,6 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="vendor/maplibre-gl.css" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -201,6 +200,8 @@
   <dialog id="connDialog">
     <div class="modal wide">
       <div class="row between"><h2>Settings &amp; connections</h2><button class="icon-btn" data-close>✕</button></div>
+      <div class="row"><button class="pill accent" id="healthBtn" type="button">🩺 Test all connections</button><span class="small muted" id="healthSum"></span></div>
+      <div id="healthList" class="hidden"></div>
       <div id="connList" class="conn-list"></div>
       <h3>Models — bring your own key</h3>
       <p class="muted small">Pick any LLM (Anthropic, Gemini, NVIDIA, DeepSeek, OpenAI, OpenRouter, Groq, Mistral, Together, Ollama, Hermes, or any OpenAI-compatible URL). Top row is tried first; on error Biruni falls back to the next, then to rules. Keys are encrypted with your PIN and never sent back to this page.</p>
@@ -261,7 +262,6 @@
     </div>
   </dialog>
 
-  <script src="vendor/maplibre-gl.js"></script>
   <script src="app.js" type="module"></script>
 </body>
 </html>

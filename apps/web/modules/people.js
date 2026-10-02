@@ -1,3 +1,4 @@
+import * as fmt from "./format.js";
 // People: your profile, trusted contacts, and shared trips (group travel).
 // Shared-trip content is end-to-end encrypted to members; the leader decides cancellations.
 export function initPeople({ $, api, esc, S }) {
@@ -28,7 +29,8 @@ export function initPeople({ $, api, esc, S }) {
   async function render() {
     const [meInfo, contacts, shares] = await Promise.all([api("GET", "/api/me"), api("GET", "/api/contacts"), api("GET", "/api/shares")]);
     $("pplProfile").innerHTML = `<div><b>${esc(meInfo.displayName)}</b> <span class="muted">@${esc(meInfo.username)}</span></div>
-      <label class="row small"><input type="checkbox" id="pplHelp" ${meInfo.help?.optIn !== false ? "checked" : ""}/> I'm willing to receive SOS from other Biruni users on this server</label>`;
+      <label class="row small"><input type="checkbox" id="pplHelp" ${meInfo.help?.optIn !== false ? "checked" : ""}/> I'm willing to receive SOS from other Biruni users on this server</label>
+      <div class="row"><a class="pill" href="/api/me/export" download>⬇️ Export my data</a><button class="pill" data-delacct>Delete my account</button></div>`;
     $("pplHelp").onchange = (e) => api("POST", "/api/me", { helpOptIn: e.target.checked });
     $("pplContacts").innerHTML = contacts.length
       ? contacts.map((c) => `<div class="mcp-row"><span>@${esc(c.username)}${c.exists ? "" : ' <span class="muted">(account gone)</span>'}</span><span class="row"><button class="pill" data-sn="${esc(c.username)}">Safety number</button><button class="pill" data-rmc="${esc(c.username)}">Remove</button></span></div>`).join("")
@@ -56,7 +58,7 @@ export function initPeople({ $, api, esc, S }) {
         : `<p class="muted small">${lead ? "Link your trip (select it in the sidebar, then " + '<button class="pill" data-link>link selected trip</button>)' : "The leader hasn't linked an itinerary yet."}</p>`}
       ${s.pendingCancels.length ? `<h3>Cancellation requests</h3>${s.pendingCancels.map((r) => `<div class="mcp-row small"><span>@${esc(r.byName)} asks to cancel <b>${esc(r.content.bookingRef)}</b>${r.content.reason ? `: “${esc(r.content.reason)}”` : ""}</span>${lead ? `<span class="row"><button class="pill accent" data-approve="${r.itemId}">Cancel it</button><button class="pill" data-decline="${r.itemId}">Keep</button></span>` : '<span class="muted">waiting for the leader</span>'}</div>`).join("")}` : ""}
       <h3>Group chat</h3>
-      <div class="share-chat">${s.items.filter((i) => ["message", "system", "cancel_decision"].includes(i.kind)).slice(-60).map((i) => `<p class="small ${i.kind !== "message" ? "muted" : ""}"><b>${esc(i.byName)}</b> ${i.kind === "message" ? esc(i.content.text) : i.kind === "cancel_decision" ? (i.content.approve ? `cancelled ${esc(i.content.bookingRef)}: ${esc(i.content.result)}` : `kept ${esc(i.content.bookingRef)}`) : esc(i.content.text)} <span class="muted">${new Date(i.at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span></p>`).join("")}</div>
+      <div class="share-chat">${s.items.filter((i) => ["message", "system", "cancel_decision"].includes(i.kind)).slice(-60).map((i) => `<p class="small ${i.kind !== "message" ? "muted" : ""}"><b>${esc(i.byName)}</b> ${i.kind === "message" ? esc(i.content.text) : i.kind === "cancel_decision" ? (i.content.approve ? `cancelled ${esc(i.content.bookingRef)}: ${esc(i.content.result)}` : `kept ${esc(i.content.bookingRef)}`) : esc(i.content.text)} <span class="muted">${fmt.relative(i.at)}</span></p>`).join("")}</div>
       <form id="pplMsg" class="form-row"><input name="text" placeholder="Message the group" required maxlength="4000" /><button class="pill accent">Send</button></form>
     </div>`;
   }
@@ -87,6 +89,15 @@ export function initPeople({ $, api, esc, S }) {
       if (d.sn) {
         const r = await api("GET", `/api/users/lookup?u=${encodeURIComponent(d.sn)}`);
         return alert(r.found ? `Safety number with @${r.username}:\n\n${r.safetyNumber}\n\nCompare with what their phone shows. Same digits = a direct, private link.` : "User not found");
+      }
+      if ("delacct" in d) {
+        const pin = prompt("This permanently deletes your account, trips, chats and memory. Shared trips pass to another member. Enter your PIN to continue:");
+        if (!pin) return;
+        const confirmWord = prompt('Type DELETE to confirm');
+        if (confirmWord !== "DELETE") return alert("Not deleted.");
+        await api("POST", "/api/me/delete", { pin, confirm: "DELETE" });
+        alert("Your account has been deleted.");
+        return location.reload();
       }
       if (d.rmc) await api("POST", "/api/contacts", { username: d.rmc, remove: true });
       if (d.lead && confirm("Hand over leadership? They'll decide cancellations from now on.")) await api("POST", `/api/shares/${current}/leader`, { userId: d.lead });

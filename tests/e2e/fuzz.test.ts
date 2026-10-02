@@ -102,7 +102,7 @@ test("server survives malformed input on every route, locked and unlocked", { ti
 
   phase("traversal");
   // Path traversal on static files.
-  for (const p of ["/../package.json", "/..%2F..%2F.env", "/%2e%2e/%2e%2e/.env", "/vendor/../../../.env"]) {
+  for (const p of ["//", "//evil.com/x", "/%", "/../package.json", "/..%2F..%2F.env", "/%2e%2e/%2e%2e/.env", "/vendor/../../../.env"]) {
     const r = await fetch(`${URL0}${p}`);
     const t = await r.text();
     assert.ok(!t.includes("GEMINI_API_KEY") && !t.includes('"dependencies"'), `traversal ${p} leaked`);

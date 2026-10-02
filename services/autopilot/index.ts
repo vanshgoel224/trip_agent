@@ -76,7 +76,7 @@ export class Autopilot {
     if (this.busy) return;
     this.busy = true;
     try {
-      for (const t of this.d.store.list<TripState>("trips")) if (["BOOKED", "TRAVELLING", "AWAITING_TRAVELLER"].includes(t.status) && this.enabled(t.tripId)) await this.tick(t.tripId).catch(() => {});
+      for (const t of this.d.store.list<TripState>("trips")) if (!t.archived && ["BOOKED", "TRAVELLING", "AWAITING_TRAVELLER"].includes(t.status) && this.enabled(t.tripId)) await this.tick(t.tripId).catch(() => {});
     } finally {
       this.busy = false;
     }

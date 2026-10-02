@@ -34,7 +34,7 @@ export default function register(route: RouteFn) {
     emit(f, "FALL", `Phone drop detected (~${f.heightM.toFixed(1)} m, ${f.impactG.toFixed(1)} g). SOS in ${Math.round(cancelWindowMs() / 1000)} s unless someone taps I'm OK`);
     return f;
   });
-  route("GET", "/api/falls/active", () => falls.active(me().userId) ?? null);
+  route("GET", "/api/falls/active", () => ({ active: falls.active(me().userId) ?? null }));
   route("POST", "/api/falls/:id/cancel", (_r, body, p) => {
     const by = ["screen", "shake", "voice", "other-device", "keyboard"].includes(String(body.by)) ? String(body.by) : "screen";
     const f = falls.cancel(me().userId, p.id, by);

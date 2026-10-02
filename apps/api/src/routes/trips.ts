@@ -76,9 +76,11 @@ route("GET", "/api/mcp/tools", () => rt().mcp.listTools());
 route("GET", "/api/health", () => ({ ok: true, providerMode: config.providerMode, undoWindowMs: config.undoWindowMs, models: rt().models.describe() }));
 
 // ---------- trips (own trips) ----------
-route("GET", "/api/trips", () =>
-  rt().store.list<TripState>("trips").sort((x, y) => y.createdAt.localeCompare(x.createdAt)).map((t) => ({ tripId: t.tripId, origin: t.itinerary.origin, destination: t.itinerary.destination, status: t.status, createdAt: t.createdAt })),
+route("GET", "/api/trips", (_r, _b, _p, url) =>
+  rt().store.list<TripState>("trips").filter((t) => url.searchParams.get("all") === "1" || !t.archived).sort((x, y) => y.createdAt.localeCompare(x.createdAt)).map((t) => ({ tripId: t.tripId, title: t.title, origin: t.itinerary.origin, destination: t.itinerary.destination, status: t.status, archived: !!t.archived, createdAt: t.createdAt })),
 );
+route("POST", "/api/trips/:tripId/update", (_r, body, p) => rt().orchestrator.updateTrip(p.tripId, { title: body.title, archived: body.archived }));
+route("POST", "/api/trips/:tripId/delete", (_r, _b, p) => rt().orchestrator.deleteTrip(p.tripId));
 route("POST", "/api/trips/quick", async (_r, body) => {
   if (!body.origin || !body.destination || !body.departure) throw new BiruniError("INVALID_REQUEST", "origin, destination and departure are required");
   return createCustomTrip(rt(), body);

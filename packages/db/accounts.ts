@@ -4,7 +4,7 @@
 // database file, encrypted with their DEK. No lockout after wrong PINs (product
 // decision); Argon2id (64 MiB, 3 passes) makes each guess slow and memory-hard.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, existsSync, renameSync } from "node:fs";
+import { mkdirSync, existsSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { boxDecrypt, boxEncrypt, deriveKek, newIdentity, newKdf, privateFromDer, type Box, type Identity, type KdfParams } from "../crypto";
@@ -115,6 +115,15 @@ export class Accounts {
     const next = { ...a, ...patch, help: { ...a.help, ...(patch.help ?? {}) } };
     this.save(next);
     return next;
+  }
+
+  /** Removes the account row and its data file. Caller verifies the PIN and closes the store first. */
+  delete(userId: string) {
+    const a = this.byId(userId);
+    if (!a) return false;
+    this.db.prepare("DELETE FROM accounts WHERE user_id = ?").run(userId);
+    for (const ext of ["", "-wal", "-shm"]) rmSync(a.dbFile + ext, { force: true });
+    return true;
   }
 
   close() {

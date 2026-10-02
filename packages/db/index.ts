@@ -194,6 +194,33 @@ export class Store {
     }
   }
 
+  /** Everything in this store, decrypted (for "export my data"). */
+  dump(): Record<string, unknown[]> {
+    const out: Record<string, unknown[]> = {};
+    for (const t of TABLES) {
+      const rows = this.list<unknown>(t);
+      if (rows.length) out[t] = rows;
+    }
+    return out;
+  }
+
+  /**
+   * Deletes a trip's rows everywhere except the finance ledgers and audit log, which
+   * stay (single-writer, append-only by design). Returns rows deleted.
+   */
+  deleteTrip(tripId: string): number {
+    const keep: Table[] = [...FINANCE_ONLY, "audit_logs", "payments"];
+    let n = 0;
+    this.tx(() => {
+      for (const t of TABLES) {
+        if (keep.includes(t)) continue;
+        n += Number(this.db.prepare(`DELETE FROM ${t} WHERE trip_id = ?`).run(keyOf(tripId)!).changes);
+      }
+      n += Number(this.db.prepare(`DELETE FROM trips WHERE id = ?`).run(keyOf(tripId)!).changes);
+    });
+    return n;
+  }
+
   close() {
     this.stmts.clear();
     this.db.close();

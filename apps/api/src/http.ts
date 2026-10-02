@@ -1,5 +1,6 @@
 // Small HTTP kit shared by the server and every route module.
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { BiruniError } from "../../../packages/shared";
 
 export type Handler = (req: IncomingMessage, body: any, params: Record<string, string>, url: URL) => Promise<unknown> | unknown;
@@ -35,10 +36,21 @@ export class Router {
 export const STATUS: Record<string, number> = { INVALID_REQUEST: 400, AUTH_FAILURE: 401, POLICY_BLOCKED: 403, AUTHORITY_EXCEEDED: 403, OBLIGATION_BLOCKED: 403, USER_REQUIRED: 409, ALREADY_COMPLETED: 409, RATE_LIMIT: 429, TIMEOUT: 504 };
 export const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".webmanifest": "application/manifest+json", ".json": "application/json", ".txt": "text/plain; charset=utf-8", ".ico": "image/x-icon", ".md": "text/markdown; charset=utf-8" };
 
+/** Picks br / gzip from Accept-Encoding for bodies worth compressing (≥ 1 KB of text). */
+export function compress(req: IncomingMessage | undefined, body: Buffer, type: string): { body: Buffer; encoding?: string } {
+  if (body.length < 1024 || !/^(text\/|application\/(json|javascript|manifest\+json)|image\/svg)/.test(type)) return { body };
+  const ae = String(req?.headers["accept-encoding"] ?? "");
+  if (/\bbr\b/.test(ae)) return { body: brotliCompressSync(body, { params: { [constants.BROTLI_PARAM_QUALITY]: 5 } }), encoding: "br" };
+  if (/\bgzip\b/.test(ae)) return { body: gzipSync(body, { level: 6 }), encoding: "gzip" };
+  return { body };
+}
+
 export function send(res: ServerResponse, code: number, data: unknown) {
   if (res.headersSent || res.writableEnded) return void (res.writableEnded || res.end());
-  res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-  res.end(JSON.stringify(data));
+  const type = "application/json; charset=utf-8";
+  const out = compress(res.req, Buffer.from(JSON.stringify(data)), type);
+  res.writeHead(code, { "content-type": type, "cache-control": "no-store", vary: "accept-encoding", ...(out.encoding ? { "content-encoding": out.encoding } : {}) });
+  res.end(out.body);
 }
 
 export async function readBody(req: IncomingMessage, limit = 15_000_000): Promise<Record<string, any>> {

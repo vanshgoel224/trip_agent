@@ -42,7 +42,7 @@ test("drop → no cancel → wide SOS reaches an opted-in helper; cancel from a 
   };
   const f1 = (await asha("/api/falls", drop)).json;
   assert.equal(f1.status, "PENDING");
-  assert.equal((await ashaLaptop("/api/falls/active")).fallId, f1.fallId, "other device sees the countdown");
+  assert.equal((await ashaLaptop("/api/falls/active")).active.fallId, f1.fallId, "other device sees the countdown");
   assert.equal((await ashaLaptop(`/api/falls/${f1.fallId}/cancel`, { by: "other-device" })).status, "CANCELLED");
   await wait(2000);
   assert.equal((await bala("/api/sos")).json.inbox.length, 0, "cancelled → no SOS");

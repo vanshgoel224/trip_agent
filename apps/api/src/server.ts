@@ -2,10 +2,11 @@
 // sign-in, per-user isolation, static files, webhooks and error handling.
 // The MCP rail server stays behind this backend and is never exposed to the browser.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
 import { bus, type BiruniEvent } from "../../../packages/events";
 import { config } from "../../../packages/shared";
@@ -35,6 +36,23 @@ const isSecure = (req: IncomingMessage) => req.headers["x-forwarded-proto"] === 
 const tokenOk = (got: string, want: string) => want.length >= 24 && got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want));
 const locked = (res: ServerResponse, message = "Biruni is locked: open the app and sign in once after the server starts") => send(res, 503, { error: { code: "LOCKED", message } });
 
+// Static files: read, hashed and compressed once, then served from memory (re-read if the file changes).
+type Asset = { raw: Buffer; gz?: Buffer; br?: Buffer; etag: string; type: string; mtime: number };
+const assets = new Map<string, Asset>();
+async function staticAsset(rel: string): Promise<Asset | undefined> {
+  const path = join(WEB_ROOT, rel);
+  const st = await stat(path).catch(() => null);
+  if (!st?.isFile()) return undefined;
+  const hit = assets.get(rel);
+  if (hit && hit.mtime === st.mtimeMs) return hit;
+  const raw = await readFile(path);
+  const type = MIME[extname(rel)] ?? "application/octet-stream";
+  const text = /^(text\/|application\/(json|javascript|manifest\+json)|image\/svg)/.test(type) && raw.length >= 1024;
+  const a: Asset = { raw, type, mtime: st.mtimeMs, etag: `"${createHash("sha1").update(raw).digest("base64url").slice(0, 16)}"`, ...(text ? { gz: gzipSync(raw, { level: 9 }), br: brotliCompressSync(raw) } : {}) };
+  assets.set(rel, a);
+  return a;
+}
+
 /** Runs a route handler as `space`'s user. */
 async function dispatch(space: Space, req: IncomingMessage, res: ServerResponse, url: URL) {
   const m = router.match(req.method ?? "GET", url.pathname);
@@ -44,6 +62,10 @@ async function dispatch(space: Space, req: IncomingMessage, res: ServerResponse,
   if (req.method === "GET" && out && typeof out === "object" && typeof out.redirect === "string") {
     res.writeHead(302, { location: out.redirect });
     return res.end();
+  }
+  if (out && typeof out === "object" && "__binary" in out) {
+    res.writeHead(200, { "content-type": String(out.mime), "cache-control": out.filename ? "no-store" : "private, max-age=600", "content-length": out.__binary.length, ...(out.filename ? { "content-disposition": `attachment; filename="${String(out.filename).replace(/[^\w.-]/g, "_")}"` } : {}) });
+    return res.end(out.__binary);
   }
   if (out && typeof out === "object" && "__raw" in out) {
     res.writeHead(200, { "content-type": "text/plain" });
@@ -102,7 +124,13 @@ async function auth(req: IncomingMessage, res: ServerResponse, url: URL): Promis
 }
 
 const server = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+  let url: URL;
+  try {
+    // A path like "//x" or a bad Host header must be a 400, never a hung request.
+    url = new URL(String(req.url ?? "/").replace(/^\/{2,}/, "/"), "http://localhost");
+  } catch {
+    return send(res, 400, { error: { code: "INVALID_REQUEST", message: "bad URL" } });
+  }
   if (isSecure(req)) res.setHeader("strict-transport-security", "max-age=31536000");
   res.setHeader("x-content-type-options", "nosniff");
   res.setHeader("referrer-policy", "same-origin");
@@ -174,6 +202,13 @@ const server = createServer(async (req, res) => {
         await spaces.changePin(space, String(oldPin ?? ""), String(newPin ?? ""));
         return send(res, 200, { ok: true, note: "PIN changed. Your data key was re-wrapped; nothing had to be re-encrypted." });
       }
+      if (p === "/api/me/delete" && req.method === "POST") {
+        const { pin, confirm } = await readBody(req, 10_000);
+        if (confirm !== "DELETE") return send(res, 400, { error: { code: "INVALID_REQUEST", message: 'Type DELETE to confirm' } });
+        const r = await spaces.deleteAccount(space, String(pin ?? ""));
+        res.setHeader("set-cookie", "biruni_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+        return send(res, 200, r);
+      }
       if (p === "/api/events") return sse(space, req, res, url);
       if (p === "/api/feedback.csv") {
         res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="biruni-feedback.csv"' });
@@ -197,10 +232,18 @@ const server = createServer(async (req, res) => {
       return send(res, 400, { error: "bad path" });
     }
     if (rel.startsWith("..") || rel.includes("\0")) return send(res, 400, { error: "bad path" });
-    const file = await readFile(join(WEB_ROOT, rel)).catch(() => null);
-    if (!file) return send(res, 404, { error: "not found" });
-    res.writeHead(200, { "content-type": MIME[extname(rel)] ?? "application/octet-stream" });
-    res.end(file);
+    const asset = await staticAsset(rel);
+    if (!asset) return send(res, 404, { error: "not found" });
+    const enc = /\bbr\b/.test(String(req.headers["accept-encoding"] ?? "")) && asset.br ? "br" : /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? "")) && asset.gz ? "gzip" : undefined;
+    // Versioned libraries and icons: cache a week. App code: always revalidate (ETag), so updates show at once.
+    const headers: Record<string, string> = { "content-type": asset.type, etag: asset.etag, vary: "accept-encoding", "cache-control": /^(vendor|icons)\//.test(rel) ? "public, max-age=604800" : "no-cache" };
+    if (req.headers["if-none-match"] === asset.etag) {
+      res.writeHead(304, headers);
+      return res.end();
+    }
+    if (enc) headers["content-encoding"] = enc;
+    res.writeHead(200, headers);
+    res.end(enc === "br" ? asset.br : enc === "gzip" ? asset.gz : asset.raw);
   } catch (e) {
     const [code, err] = classifyError(e);
     if (code === 500) console.error(`[500] ${req.method} ${url.pathname}:`, e instanceof Error ? e.stack : e);

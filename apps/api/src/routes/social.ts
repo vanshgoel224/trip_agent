@@ -4,6 +4,7 @@ import type { Traveller, TripState } from "../../../../packages/domain";
 import { bus } from "../../../../packages/events";
 import { BiruniError } from "../../../../packages/shared";
 import { withActor } from "../../../../packages/shared/context";
+import { parsePhoto } from "../../../../services/social";
 import type { RouteFn } from "../http";
 import { me, rt, spaces, type Space } from "../spaces";
 
@@ -17,14 +18,14 @@ export const EMERGENCY = [
 ];
 
 /** Raise an SOS as this space's user: sealed alerts, live pings to recipients, SMS to the trip's emergency contact. */
-export async function sendSos(space: Space, input: { message: string; location?: { lat: number; lng: number; accuracy?: number; at?: string }; everyone?: boolean; tripId?: string }) {
+export async function sendSos(space: Space, input: { message: string; location?: { lat: number; lng: number; accuracy?: number; at?: string }; everyone?: boolean; tripId?: string; photo?: unknown }) {
   const b = space.b;
   const tripId = input.tripId;
   const trip = tripId ? b.store.get<TripState>("trips", tripId) : undefined;
   const last = b.devices.latest(tripId) ?? b.devices.latest();
   const location = input.location && Number.isFinite(Number(input.location.lat)) ? input.location : last ? { lat: last.lat, lng: last.lng, accuracy: last.accuracy, at: last.at } : undefined;
   const contactsList = b.store.get<{ list: string[] }>("settings", "contacts")?.list ?? [];
-  const r = spaces.social.raiseSos(space.me, { message: input.message, location, tripTitle: trip ? `${trip.itinerary.origin} → ${trip.itinerary.destination}` : undefined }, { contacts: contactsList, everyone: !!input.everyone });
+  const r = spaces.social.raiseSos(space.me, { message: input.message, location, tripTitle: trip ? `${trip.itinerary.origin} → ${trip.itinerary.destination}` : undefined }, { contacts: contactsList, everyone: !!input.everyone, photo: parsePhoto(input.photo) });
   // Wake each recipient's live stream (they see who, not what, until they open it).
   for (const name of r.sentTo) {
     const a = spaces.accounts.byUsername(name);
@@ -52,6 +53,20 @@ export default function register(route: RouteFn) {
     if (body.helpOptIn !== undefined) patch.help = { optIn: !!body.helpOptIn };
     const a = spaces.accounts.update(me().userId, patch);
     return { username: a.username, displayName: a.displayName, help: a.help };
+  });
+  // Your data, decrypted, as one JSON file (India's DPDP Act: right to access).
+  route("GET", "/api/me/export", () => {
+    const a = spaces.accounts.byId(me().userId)!;
+    const data = {
+      exportedAt: new Date().toISOString(), format: "biruni-export-v1",
+      account: { username: a.username, displayName: a.displayName, createdAt: a.createdAt, help: a.help },
+      space: rt().store.dump(),
+      sharedTrips: spaces.social.shares(me().userId).map((s) => ({ ...spaces.social.view(s, me()), items: spaces.social.items(s.shareId, me()) })),
+      sos: { sent: spaces.social.mine(me()), received: spaces.social.inbox(me()) },
+    };
+    // API keys you entered stay out of exports.
+    for (const row of (data.space.settings ?? []) as { providers?: { apiKey?: string }[] }[]) for (const p of row.providers ?? []) if (p.apiKey) p.apiKey = "(removed from export)";
+    return { __binary: Buffer.from(JSON.stringify(data, null, 2)), mime: "application/json; charset=utf-8", filename: `biruni-${a.username}-${new Date().toISOString().slice(0, 10)}.json` };
   });
   route("GET", "/api/users/lookup", (_r, _b, _p, url) => {
     const a = spaces.accounts.byUsername(url.searchParams.get("u") ?? "");
@@ -119,7 +134,7 @@ export default function register(route: RouteFn) {
 
   // ---------- SOS ----------
   route("GET", "/api/sos", () => ({ inbox: spaces.social.inbox(me()), mine: spaces.social.mine(me()), emergency: EMERGENCY }));
-  route("POST", "/api/sos", (_r, body) => sendSos(spaces.current(), { message: String(body.message ?? ""), location: body.location, everyone: !!body.everyone, tripId: body.tripId ? String(body.tripId) : undefined }));
+  route("POST", "/api/sos", (_r, body) => sendSos(spaces.current(), { message: String(body.message ?? ""), location: body.location, everyone: !!body.everyone, tripId: body.tripId ? String(body.tripId) : undefined, photo: body.photo }));
   route("POST", "/api/sos/:id/respond", (_r, body, p) => {
     const out = spaces.social.respond(p.id, me(), body.kind, body.note);
     const sender = spaces.social.inbox(me()).find((x) => x.sosId === p.id)?.from;
@@ -127,6 +142,10 @@ export default function register(route: RouteFn) {
     const label = { seen: "has seen it", coming: "is coming", called_authorities: "has called the authorities", cant_help: "can't help" }[String(body.kind)] ?? body.kind;
     if (a) withActor({ userId: a.userId, username: a.username }, () => bus.emitEvent({ tripId: "*", agent: "help", type: "SOS_REPLY", detail: `${me().username} ${label}` }));
     return out;
+  });
+  route("GET", "/api/sos/:id/photo", (_r, _b, p) => {
+    const ph = spaces.social.photo(p.id, me());
+    return { __binary: ph.data, mime: ph.mime };
   });
   route("POST", "/api/sos/:id/resolve", (_r, _b, p) => spaces.social.resolve(p.id, me()));
 }

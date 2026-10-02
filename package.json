@@ -8,9 +8,10 @@
     "mcp:stdio": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx services/mcp/stdio.ts",
     "demo": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx tests/scenarios/run-demo.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --no-warnings=ExperimentalWarning --import tsx --test \"tests/{authority,payments,idempotency,recovery,chat,autopilot,negotiator,security,models,booking,telephony,feed,users,falls}/*.test.ts\"",
+    "test": "node --no-warnings=ExperimentalWarning --import tsx --test \"tests/{authority,payments,idempotency,recovery,chat,autopilot,negotiator,security,models,booking,telephony,feed,users,falls,format}/*.test.ts\"",
     "models:check": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning --import tsx scripts/check-models.ts",
-    "test:e2e": "node --no-warnings=ExperimentalWarning --import tsx --test \"tests/e2e/*.test.ts\""
+    "test:e2e": "node --no-warnings=ExperimentalWarning --import tsx --test \"tests/e2e/*.test.ts\"",
+    "check": "node scripts/check.mjs"
   },
   "repository": {
     "type": "git",

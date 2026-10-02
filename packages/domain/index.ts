@@ -125,6 +125,10 @@ export type TripState = {
   currentRoute?: Route;
   lastActions: ActionRecord[];
   activities?: Activity[];
+  /** Traveller's own name for the trip, e.g. "Goa with college friends". */
+  title?: string;
+  /** Hidden from the trip list and ignored by the autopilot, but kept. */
+  archived?: boolean;
   createdAt: string;
   updatedAt: string;
 };

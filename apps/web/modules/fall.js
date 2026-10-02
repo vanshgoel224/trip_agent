@@ -3,6 +3,7 @@
 // to cancel that don't need a working screen: shake 3×, say "I'm OK", any key, or
 // tap "I'm OK" on any other device signed into your account.
 import { FallDetector, ShakeCounter } from "./falldetect.js";
+import { sfx } from "./effects.js";
 
 const OK_WORDS = /\b(i'?m ok(ay)?|i am ok(ay)?|ok(ay)?|fine|theek|thik|theek hoon|thik hu|safe|cancel|no help|nahi)\b/i;
 
@@ -37,12 +38,14 @@ export function initFall({ $, api, esc, S, secureLocal }) {
     const tick = () => {
       const s = Math.max(0, Math.round((Date.parse(fall.deadline) - Date.now()) / 1000));
       $("fallSecs").textContent = s;
-      if (local && s > 0 && s % 10 === 0) vibrate([300, 150, 300]);
+      if (local && s > 0 && s % 10 === 0) (vibrate([300, 150, 300]), sfx.notify());
+      if (local && s > 0 && s <= 5) sfx.alarm(0.5);
       if (s === 0) clearInterval(ticker);
     };
     tick();
     ticker = setInterval(tick, 1000);
     if (local) {
+      sfx.alarm(2);
       vibrate([600, 200, 600, 200, 600]);
       say("Your phone was dropped. Are you OK? Say I'm OK, or shake the phone three times to cancel.");
       listen();
@@ -138,7 +141,7 @@ export function initFall({ $, api, esc, S, secureLocal }) {
     if (e.type === "FALL_CANCELLED" && active?.fallId === e.data?.fallId) hide("Cancelled from another device.");
     if (e.type === "FALL_SOS") hide("No response: SOS sent to your trip, contacts and helpers nearby.");
   });
-  api("GET", "/api/falls/active").then((f) => f && show(f, false)).catch(() => {});
+  api("GET", "/api/falls/active").then((r) => r?.active?.fallId && show(r.active, false)).catch(() => {});
 
   return {
     async start() {

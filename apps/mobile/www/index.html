@@ -11,7 +11,8 @@
     .box { width: min(92vw, 380px); text-align: center; }
     img { width: 88px; height: 88px; border-radius: 22px; }
     input { width: 100%; box-sizing: border-box; padding: 12px 14px; border-radius: 12px; border: 1px solid #333; background: #151515; color: inherit; font: inherit; margin: 14px 0 10px; }
-    button { width: 100%; padding: 12px; border: 0; border-radius: 12px; background: #e9b949; color: #111; font: inherit; font-weight: 600; }
+    button { width: 100%; padding: 12px; border: 0; border-radius: 12px; background: #e9b949; color: #111; font: inherit; font-weight: 600; margin-top: 8px; }
+    button.secondary { background: #222; color: #eee; border: 1px solid #333; }
     .muted { color: #999; font-size: 13px; }
     .err { color: #ff7b72; min-height: 1.5em; font-size: 14px; }
   </style>
@@ -23,6 +24,8 @@
     <p class="muted">Enter the address of your Biruni server (the computer or cloud host running <code>npm start</code>).</p>
     <input id="url" type="url" inputmode="url" placeholder="https://biruni.example.com" autocomplete="url" required />
     <button>Connect</button>
+    <button type="button" id="perm" class="secondary">Allow location, microphone, camera &amp; alerts</button>
+    <p class="muted" id="permOut">Android asks once; Biruni uses these for maps, voice, SOS photos and drop alerts.</p>
     <p class="err" id="err"></p>
     <p class="muted">Use https for GPS and the microphone. On the same Wi-Fi you can use http://&lt;computer-ip&gt;:8787.</p>
   </form>
@@ -47,8 +50,21 @@
         document.getElementById("err").textContent = "Can't reach " + url + " (" + e.message + "). Is the server running and reachable from this phone?";
       }
     }
-    document.getElementById("f").onsubmit = (e) => (e.preventDefault(), go(field.value));
-    if (get() && !location.hash.includes("change")) go(get());
+    // Ask Android for runtime permissions here (the app's own page), one prompt at a time.
+    // They are app-wide, so the Biruni page you connect to gets them too.
+    document.getElementById("perm").onclick = async () => {
+      const out = [];
+      const step = async (name, fn) => { try { await fn(); out.push("✅ " + name); } catch (e) { out.push("⛔ " + name); } document.getElementById("permOut").textContent = out.join("  "); };
+      await step("Location", () => new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, (e) => (e.code === 1 ? rej(e) : res()), { timeout: 15000 })));
+      await step("Microphone", async () => (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((t) => t.stop()));
+      await step("Camera", async () => (await navigator.mediaDevices.getUserMedia({ video: true })).getTracks().forEach((t) => t.stop()));
+      if (typeof Notification !== "undefined") await step("Alerts", async () => { if ((await Notification.requestPermission()) !== "granted") throw new Error("no"); });
+      if (out.some((x) => x.startsWith("⛔"))) out.push("— blocked ones: Android Settings → Apps → Biruni → Permissions");
+      document.getElementById("permOut").textContent = out.join("  ");
+    };
+    document.getElementById("f").onsubmit = (e) => { e.preventDefault(); try { localStorage.setItem("biruni.permAsked", "1"); } catch {} go(field.value); };
+    if (get() && !location.hash.includes("change") && localStorage.getItem("biruni.permAsked")) go(get());
+    document.getElementById("perm").addEventListener("click", () => { try { localStorage.setItem("biruni.permAsked", "1"); } catch {} });
   </script>
 </body>
 </html>

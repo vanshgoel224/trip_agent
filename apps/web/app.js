@@ -1,14 +1,17 @@
 // Biruni UI. Talks only to the Biruni API — never to MCP servers or vendor rails directly.
 // Each feature with its own UI lives in ./modules/* and is started independently, so one
 // failing feature (say, the battery API on an old browser) never takes the app down.
+import * as F from "./modules/format.js";
 import { secureLocal } from "./modules/securelocal.js";
 import { initLegal } from "./modules/legal.js";
 import { initSos } from "./modules/sos.js";
 import { initPeople } from "./modules/people.js";
 import { initBattery, power } from "./modules/battery.js";
 import { initFall } from "./modules/fall.js";
+import { initPermissions } from "./modules/permissions.js";
+import { initEffects, sfx, toast, flash } from "./modules/effects.js";
 const $ = (id) => document.getElementById(id);
-const inr = (n) => "₹" + Number(n).toLocaleString("en-IN");
+const inr = (n) => F.inr(n);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const fmt = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--link)">$1</a>');
 const store = { get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
@@ -231,14 +234,16 @@ async function send(text) {
   if (/^\/btw\s/i.test(text)) userEl.querySelector(".bubble").style.opacity = "0.7";
   const typing = document.createElement("div");
   typing.className = "msg assistant";
-  typing.innerHTML = `<div class="bubble typing">Thinking</div>`;
+  typing.innerHTML = `<div class="bubble"><span class="typing" aria-label="Thinking"><i></i><i></i><i></i></span></div>`;
   $("messages").append(typing);
   $("send").disabled = true;
+  sfx.send();
   try {
     const isTr = S.chats.find((c) => c.chatId === S.chatId)?.mode === "translate" || !$("translateBar").classList.contains("hidden");
     const r = await api("POST", `/api/chats/${S.chatId}/messages`, isTr ? { text, targetLanguage: $("toLang").value, sourceLanguage: $("fromLang").value } : { text });
     typing.remove();
     const el = addMsg("assistant", r.message.text, { ...r.message, copiedTo: r.copiedTo });
+    sfx.receive();
     if (r.ephemeral) el.style.opacity = "0.8";
     if ($("speak").checked) speak(r.message.text, langForSpeech());
     loadChats();
@@ -246,6 +251,7 @@ async function send(text) {
   } catch (e) {
     typing.remove();
     addMsg("assistant", `Error: ${e.message}`);
+    sfx.error();
   } finally {
     $("send").disabled = false;
   }
@@ -448,7 +454,7 @@ document.addEventListener("submit", (e) => {
 // ---------------- trips ----------------
 async function loadTrips() {
   const trips = await api("GET", "/api/trips");
-  $("tripSelect").innerHTML = `<option value="">No trip</option>` + trips.map((t) => `<option value="${t.tripId}">${esc(t.origin)} → ${esc(t.destination)} · ${t.status}</option>`).join("");
+  $("tripSelect").innerHTML = `<option value="">No trip</option>` + trips.map((t) => `<option value="${t.tripId}">${t.title ? `${esc(t.title)} · ` : ""}${esc(t.origin)} → ${esc(t.destination)} · ${t.status}</option>`).join("");
   $("tripSelect").value = trips.some((t) => t.tripId === S.tripId) ? S.tripId : "";
 }
 
@@ -462,6 +468,33 @@ function setTrip(tripId, persistToChat = true) {
 }
 
 $("tripSelect").onchange = (e) => setTrip(e.target.value);
+// Trip CRUD from the trip card.
+$("tripCard").addEventListener("click", async (e) => {
+  const act = e.target.closest("[data-trip-act]")?.dataset.tripAct;
+  if (!act || !S.tripId) return;
+  try {
+    if (act === "rename") {
+      const title = prompt("Name this trip (e.g. Goa with college friends):", S.snap?.trip?.title ?? "");
+      if (title === null) return;
+      await api("POST", `/api/trips/${S.tripId}/update`, { title });
+      toast("Trip renamed");
+    } else if (act === "archive") {
+      if (!confirm("Archive this trip? It's hidden from the list and the autopilot stops watching it. Nothing is deleted.")) return;
+      await api("POST", `/api/trips/${S.tripId}/update`, { archived: true });
+      toast("Trip archived");
+      await setTrip("");
+    } else if (act === "delete") {
+      if (!confirm("Delete this trip and its plans, chats links and location history? Payments and the audit log are kept. This can't be undone.")) return;
+      const r = await api("POST", `/api/trips/${S.tripId}/delete`);
+      toast(`Trip deleted (${r.deleted} records)`);
+      await setTrip("");
+    }
+    await loadTrips();
+    refreshTrip();
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+});
 $("newTripBtn").onclick = () => {
   const d = new Date(Date.now() + 6 * 3600_000);
   $("tripForm").departure.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -501,7 +534,8 @@ function renderTrip() {
   const acts = trip.activities ?? [];
   $("tripCard").classList.remove("muted");
   $("tripCard").innerHTML = `
-    <div class="card-title">${esc(trip.itinerary.origin)} → ${esc(trip.itinerary.destination)}</div>
+    <div class="row between"><div class="card-title" style="margin:0">${trip.title ? `${esc(trip.title)} · ` : ""}${esc(trip.itinerary.origin)} → ${esc(trip.itinerary.destination)}</div>
+      <span class="row"><button class="icon-btn" data-trip-act="rename" title="Rename trip">✎</button><button class="icon-btn" data-trip-act="archive" title="Archive (hide, stop autopilot)">🗄️</button><button class="icon-btn" data-trip-act="delete" title="Delete trip">🗑️</button></span></div>
     <dl class="kv"><dt>Status</dt><dd>${trip.status}${runtime.online ? "" : " · OFFLINE"}</dd>
     <dt>Authority</dt><dd>${ledger ? `${inr(ledger.remainingIncident)} of ${inr(ledger.incidentLimit)} · today ${inr(ledger.remainingDaily)}` : "₹2,000 per disruption"}</dd>
     <dt>Free balance</dt><dd>${obligations ? `${inr(obligations.freeBalance)} <span class="muted small">(committed ${inr(obligations.committedTotal)}, simulated)</span>` : "—"}</dd></dl>
@@ -579,6 +613,8 @@ function connectEvents() {
     if (e.type === "PLAN") renderPlan(e.data);
     if (e.type === "DEAL") renderDeal(e.data.dealId);
     if (e.type === "AUTOPILOT") refreshAutopilot();
+    if (e.type === "ITINERARY") (sfx.success(), setTimeout(() => flash($("tripCard")), 300));
+    if (e.type === "UNDO_CANCELLED") toast("Undone — nothing was charged", "ok");
     if (e.type === "VOICE" && e.data?.kind === "CHECKIN") $("checkin").classList.remove("hidden");
     if (["STEP", "TRIP_STATUS", "ITINERARY", "ACTIVITY", "LEDGER_COMMIT", "UNDO_EXPIRED", "UNDO_CANCELLED", "ROUTE", "LOCATION"].includes(e.type)) scheduleRefresh();
   };
@@ -595,9 +631,21 @@ const OSM_RASTER = {
   layers: [{ id: "osm", type: "raster", source: "osm" }],
 };
 let map, meMarker, mapReady = false, pendingRoute = null;
+// The map library is ~800 KB: load it only when a map is first needed.
+let mapLib = null;
+function loadMapLib() {
+  if (window.maplibregl) return Promise.resolve();
+  return (mapLib ??= new Promise((res, rej) => {
+    const css = Object.assign(document.createElement("link"), { rel: "stylesheet", href: "vendor/maplibre-gl.css" });
+    const js = Object.assign(document.createElement("script"), { src: "vendor/maplibre-gl.js", async: true, onload: res, onerror: () => ((mapLib = null), rej(new Error("map library failed to load"))) });
+    document.head.append(css, js);
+  }));
+}
 function ensureMap() {
-  if (map || !window.maplibregl) {
-    if (!window.maplibregl) $("mapNote").textContent = "· map library didn't load (offline?)";
+  if (map) return;
+  if (!window.maplibregl) {
+    $("mapNote").textContent = "· loading map…";
+    loadMapLib().then(() => (($("mapNote").textContent = ""), refreshDevice())).catch(() => ($("mapNote").textContent = "· map library didn't load (offline?)"));
     return;
   }
   map = new maplibregl.Map({ container: "map", style: "https://tiles.openfreemap.org/styles/liberty", center: [78.9, 20.6], zoom: 3.5, attributionControl: { compact: true } });
@@ -648,7 +696,7 @@ async function refreshDevice() {
   }
   if (st.route?.geometry?.length) {
     drawRoute(st.route);
-    $("routeSteps").innerHTML = `<li class="muted">${esc(st.route.to?.name ?? "")}: ${(st.route.distanceM / 1000).toFixed(1)} km · ${Math.round(st.route.durationS / 60)} min</li>` + st.route.steps.map((x) => `<li>${esc(x)}</li>`).join("");
+    $("routeSteps").innerHTML = `<li class="muted">${esc(st.route.to?.name ?? "")}: ${F.distance(st.route.distanceM)} · ${F.duration(st.route.durationS)}</li>` + st.route.steps.map((x) => `<li>${esc(x)}</li>`).join("");
   }
 }
 
@@ -732,6 +780,25 @@ async function openConnections() {
   $("scenarioList").innerHTML = sc.map((s) => `<button class="chip" data-scenario="${s.name}" title="${esc(s.trigger)}">${s.name}: ${esc(s.title)}</button>`).join("");
   $("connDialog").showModal();
 }
+// ---------------- integrations health ----------------
+$("healthBtn").onclick = async () => {
+  $("healthBtn").disabled = true;
+  $("healthSum").textContent = "Testing…";
+  try {
+    const h = await api("GET", "/api/integrations/health");
+    const icon = { ok: "✅", down: "❌", simulated: "🧪", off: "⚪" };
+    const groups = [...new Set(h.checks.map((c) => c.group))];
+    $("healthList").innerHTML = groups.map((g) => `<div class="side-label">${esc(g)}</div>${h.checks.filter((c) => c.group === g).map((c) => `<div class="perm-row small"><div>${icon[c.state]} <b>${esc(c.name)}</b>${c.ms != null ? ` <span class="muted">${c.ms} ms</span>` : ""}<br><span class="muted">${esc(c.note)}</span></div></div>`).join("")}`).join("");
+    $("healthList").classList.remove("hidden");
+    $("healthSum").textContent = h.summary;
+    toast(h.summary, h.checks.some((c) => c.state === "down") ? "bad" : "ok");
+  } catch (e) {
+    $("healthSum").textContent = e.message;
+  } finally {
+    $("healthBtn").disabled = false;
+  }
+};
+
 // ---------------- models (BYOK) ----------------
 const M = { presets: null, rows: [] };
 async function loadModels() {
@@ -1066,7 +1133,7 @@ let started = false;
 const features = {};
 function startFeatures() {
   const deps = { $, api, esc, S, store, secureLocal };
-  for (const [name, init] of [["legal", initLegal], ["sos", initSos], ["people", initPeople], ["battery", initBattery], ["fall", initFall]]) {
+  for (const [name, init] of [["effects", initEffects], ["legal", initLegal], ["sos", initSos], ["people", initPeople], ["battery", initBattery], ["permissions", initPermissions], ["fall", initFall]]) {
     try {
       features[name] = init(deps) ?? {};
     } catch (e) {
@@ -1074,6 +1141,10 @@ function startFeatures() {
     }
   }
   features.legal?.ensureAccepted?.();
+  // After the one-time terms, offer the permissions setup once.
+  const legalDlg = document.getElementById("legalDialog");
+  if (legalDlg?.open) legalDlg.addEventListener("close", () => features.permissions?.onboard(), { once: true });
+  else features.permissions?.onboard();
   window.biruniFall = features.fall; // console: biruniFall.simulate() to try it on a laptop
   // Re-arm drop watch on reload (Android allows motion without a prompt; iOS asks on the toggle).
   if (store.get("fallWatch", false) && typeof DeviceMotionEvent?.requestPermission !== "function") {

@@ -137,6 +137,17 @@ export class Spaces {
     res.setHeader("set-cookie", `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
   }
 
+  /** Permanently delete this user: verify PIN, leave/hand over shared trips, wipe their data file. */
+  async deleteAccount(space: Space, pin: string) {
+    await this.accounts.unlock(space.me.username, pin); // throws "Wrong username or PIN"
+    this.social.purgeUser(space.me);
+    for (const [k, v] of this.sessions) if (v.userId === space.me.userId) this.sessions.delete(k);
+    space.b.shutdown();
+    this.loaded.delete(space.me.userId);
+    this.accounts.delete(space.me.userId);
+    return { deleted: true };
+  }
+
   async changePin(space: Space, oldPin: string, newPin: string) {
     await this.accounts.changePin(space.me.username, oldPin, newPin);
   }

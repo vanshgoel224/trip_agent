@@ -127,3 +127,26 @@ test("legacy single-PIN database is adopted without re-encryption", async () => 
   assert.equal((back.get("chats", "C1") as any).title, "old chat");
   writeFileSync(join(dir, "x"), "");
 });
+
+test("SOS photo: validated by magic bytes, encrypted once, readable only by sender and recipients", async () => {
+  const { parsePhoto } = await import("../../services/social");
+  const dir = fresh();
+  const acc = new Accounts(dir);
+  const A = me(await acc.create("snapper", "111111")), B = me(await acc.create("friend", "222222")), C = me(await acc.create("other", "333333"));
+  const social = new Social(dir, acc);
+  social.invite(social.createShare(A, "trip").shareId, A, "friend");
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), randomBytes(2000)]);
+  const url = `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+  assert.throws(() => parsePhoto(`data:image/png;base64,${jpeg.toString("base64")}`), /isn't the image type/);
+  assert.throws(() => parsePhoto("data:text/html;base64,PHNjcmlwdD4="), /WebP, JPEG or PNG/);
+  assert.throws(() => parsePhoto(`data:image/jpeg;base64,${Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.alloc(500_000)]).toString("base64")}`), /too large/);
+  const r = social.raiseSos(A, { message: "here" }, { photo: parsePhoto(url) });
+  assert.equal(r.photo?.bytes, jpeg.length);
+  assert.ok(social.inbox(B)[0].hasPhoto);
+  assert.ok(!("photoKey" in social.inbox(B)[0]), "photo key never leaves the sealed copy");
+  assert.deepEqual(social.photo(r.sosId, B).data, jpeg);
+  assert.deepEqual(social.photo(r.sosId, A).data, jpeg, "sender can see their own photo");
+  assert.throws(() => social.photo(r.sosId, C), /wasn't sent to you/);
+  const raw = readFileSync(join(dir, "shared.db"));
+  assert.ok(!raw.includes(jpeg.subarray(4, 40)), "stored encrypted");
+});

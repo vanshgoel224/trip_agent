@@ -1,0 +1,13 @@
+export function inr(n: number, opts?: { compact?: boolean; paise?: boolean }): string;
+export function dateTime(d: Date | string | number, opts?: { seconds?: boolean }): string;
+export function time(d: Date | string | number): string;
+export function date(d: Date | string | number): string;
+export function relative(d: Date | string | number, now?: number): string;
+export function distance(m: number): string;
+export function duration(seconds: number): string;
+export function phone(p: string): string;
+export function maskTail(s: string | undefined, keep?: number): string;
+export function pnr(s: string): string;
+export function bytes(n: number): string;
+export function coords(lat: number, lng: number): string;
+export function clip(s: string, max?: number): string;

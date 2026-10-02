@@ -7,7 +7,10 @@ export const nowIso = () => new Date().toISOString();
 
 export const todayKey = (d = new Date()) => d.toISOString().slice(0, 10);
 
-export const inr = (n: number) => `₹${n.toLocaleString("en-IN")}`;
+// Formatters live in one module shared with the app (apps/web/modules/format.js).
+import { inr as fmtInr } from "../../apps/web/modules/format.js";
+export * as fmt from "../../apps/web/modules/format.js";
+export const inr = (n: number) => fmtInr(n);
 
 export class BiruniError extends Error {
   constructor(

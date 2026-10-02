@@ -6,10 +6,14 @@ name: Android APK
 on:
   workflow_dispatch:
   push:
+    tags: ["v*"]
     paths:
       - "apps/mobile/**"
       - "apps/web/icons/**"
       - ".github/workflows/android-apk.yml"
+
+permissions:
+  contents: write # attach the APK to a GitHub Release on version tags
 
 jobs:
   build:
@@ -52,8 +56,14 @@ jobs:
           rm -rf $RES/mipmap-anydpi-v26
           cp -r res/* $RES/
           MANIFEST=android/app/src/main/AndroidManifest.xml
-          for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION RECORD_AUDIO MODIFY_AUDIO_SETTINGS; do
-            grep -q "android.permission.$p" $MANIFEST || sed -i "s#</manifest>#    <uses-permission android:name=\"android.permission.$p\" />\n</manifest>#" $MANIFEST
+          # Runtime permissions the web app asks for (Android shows its own prompt on first use):
+          # location, microphone, camera, vibration, notifications (Android 13+), high-rate motion sensors.
+          for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION RECORD_AUDIO MODIFY_AUDIO_SETTINGS CAMERA VIBRATE POST_NOTIFICATIONS HIGH_SAMPLING_RATE_SENSORS WAKE_LOCK; do
+            grep -q "android.permission.$p\"" $MANIFEST || sed -i "s#</manifest>#    <uses-permission android:name=\"android.permission.$p\" />\n</manifest>#" $MANIFEST
+          done
+          # Optional hardware: the app still installs on phones without these.
+          for f in android.hardware.camera android.hardware.location.gps android.hardware.microphone android.hardware.sensor.accelerometer; do
+            grep -q "$f\"" $MANIFEST || sed -i "s#</manifest>#    <uses-feature android:name=\"$f\" android:required=\"false\" />\n</manifest>#" $MANIFEST
           done
           cat $MANIFEST
 
@@ -67,3 +77,13 @@ jobs:
           name: biruni-debug-apk
           path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # Tag v1.2.3 → a GitHub Release with the APK attached (debug-signed; see README).
+      - name: Release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: .
+        run: |
+          cp apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk "biruni-${GITHUB_REF_NAME}.apk"
+          gh release create "$GITHUB_REF_NAME" "biruni-${GITHUB_REF_NAME}.apk" --title "Biruni $GITHUB_REF_NAME" --generate-notes || gh release upload "$GITHUB_REF_NAME" "biruni-${GITHUB_REF_NAME}.apk" --clobber

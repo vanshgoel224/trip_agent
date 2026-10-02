@@ -28,12 +28,14 @@ import { BiruniError, config } from "../../../../packages/shared";
 import type { Incident, TripState } from "../../../../packages/domain";
 
 import type { RouteFn } from "../http";
+import { healthCheck } from "../../../../services/integrations/health";
 import { rt, me, cal, spaces } from "../spaces";
 
 /** OAuth state → user, so Google's redirect (no session cookie: SameSite=Strict) lands in the right space. */
 export const oauthStates = new Map<string, string>();
 
 export default function register(route: RouteFn) {
+  route("GET", "/api/integrations/health", () => healthCheck(rt()));
 // ---------- connections ----------
 
 route("GET", "/api/connections", () => {

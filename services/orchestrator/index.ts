@@ -74,6 +74,25 @@ export class Orchestrator {
     return transitionTrip(this.store, tripId, "TRAVELLING");
   }
 
+  /** Rename or archive a trip. */
+  updateTrip(tripId: string, patch: { title?: string; archived?: boolean }) {
+    const t = this.trip(tripId);
+    const next: TripState = { ...t, updatedAt: nowIso() };
+    if (patch.title !== undefined) next.title = String(patch.title).trim().slice(0, 80) || undefined;
+    if (patch.archived !== undefined) next.archived = !!patch.archived;
+    this.store.put("trips", tripId, next, { tripId });
+    bus.emitEvent({ tripId, agent: "orchestrator", type: "TRIP_STATUS", detail: next.archived ? "Trip archived" : "Trip updated" });
+    return next;
+  }
+
+  /** Delete a trip and its chats/plans/devices data. Refused while money or an undo window is in flight. */
+  deleteTrip(tripId: string) {
+    this.trip(tripId);
+    const inc = this.currentIncident(tripId);
+    if (inc && !["CLOSED", "UNDONE"].includes(inc.step)) throw new BiruniError("POLICY_BLOCKED", "A recovery is still running on this trip: finish or undo it first");
+    return { deleted: this.store.deleteTrip(tripId), kept: "finance ledger and audit log (append-only)" };
+  }
+
   trip(tripId: string) {
     const t = this.store.get<TripState>("trips", tripId);
     if (!t) throw new BiruniError("INVALID_REQUEST", `unknown trip ${tripId}`);

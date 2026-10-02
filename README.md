@@ -36,7 +36,7 @@ Requires Node ≥ 22.5. Persistence uses the built-in `node:sqlite`, which is st
 ```bash
 npm install
 cp .env.example .env   # set GEMINI_API_KEY (or ONLINE_MODEL_API_KEY) and BIRUNI_INITIAL_PIN; .env is git-ignored
-npm test          # 82 tests: authority, payments, idempotency, recovery, chats, memory, models, booking, feed, telephony, multi-user, SOS
+npm test          # 93 tests: authority, payments, idempotency, recovery, chats, memory, models, booking, feed, telephony, multi-user, SOS
 npm run test:e2e  # real server under ~1,000 hostile requests + remote MCP
 npm run demo      # CLI walkthrough of every scenario (short undo window)
 npm start         # API + UI on http://localhost:8787 — starts LOCKED; sign in (BIRUNI_INITIAL_PIN creates user "owner")
@@ -63,10 +63,13 @@ Phone sensors (GPS, accelerometer, microphone) only work on `https://` or `local
 docker compose up -d                          # app on :8787, data in the biruni-data volume
 docker compose --profile test run --rm test   # full suite + e2e inside a container
 docker build --target test .                  # what CI runs (.github/workflows/ci.yml)
+npm run check                                 # typecheck + browser syntax check + secret scan
 ```
 If Docker Hub rate-limits you, add `--build-arg NODE_IMAGE=mirror.gcr.io/library/node:22-slim`.
 
 ## Architecture
+
+Full systems architecture, with deployment, request lifecycle, security model, code map, CRUD table, CI/CD and performance notes: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ```
 Traveller (voice/text) → apps/web → apps/api ─┐
@@ -214,6 +217,22 @@ Honest limits:
 - **The thresholds are tuned on synthetic sensor data, not real phones.** Expect to adjust `apps/web/modules/falldetect.js` after real drop tests.
 - **Volume and power buttons can't be read by a web app.** That's why there's the shake and voice cancel instead.
 - **Motion sensors only run while the app is open.** A web app can't detect drops with the screen off or the app closed; that needs a native background service.
+
+## Permissions, photos, effects, data
+
+- **🛡️ Permissions** (sidebar) shows location, microphone, camera, motion, notifications and storage:
+  - what each one is for, its status, an **Allow** button, and how to fix a block (browser vs. Android settings);
+  - a warning when the page isn't on https.
+  - It opens once after first sign-in.
+  - **APK:** the launcher page asks Android for location, microphone, camera and notifications before connecting. The manifest declares these plus vibration, wake lock and high-rate motion sensors (CI adds them).
+- **SOS photo:** compressed on the phone (resize to 1280 px, WebP; a 12 MP photo becomes about 100–150 KB, with EXIF stripped). It's validated by its real file type and encrypted once for all recipients.
+- **Sounds and haptics:** generated with Web Audio (no audio files): send, receive, success, error, notify, and an SOS/drop alarm. Toasts and gentle animations, a 🔇 switch, and the phone's reduce-motion setting are honoured.
+- **Formatting:** ₹ in lakh/crore, IST times, "5 min ago", km, +91 numbers and PNRs, all from one shared module (`apps/web/modules/format.js`).
+- **Your data:**
+  - rename, archive or delete trips;
+  - **export everything** as JSON (your API keys are left out);
+  - **delete your account** (PIN + typing DELETE; shared trips pass to another member).
+- **🩺 Test all connections** (Settings) pings maps and AI providers live and reports which keyed services are configured or simulated.
 
 ## Power
 

@@ -28,7 +28,22 @@ export type ShareItem = { itemId: string; shareId: string; kind: ShareItemKind; 
 
 export type SosPayload = { message: string; location?: { lat: number; lng: number; accuracy?: number; at?: string; label?: string }; tripTitle?: string; emergencyNote?: string };
 export type SosAck = { userId: string; username: string; kind: "seen" | "coming" | "called_authorities" | "cant_help"; note?: Sealed; at: string };
-type SosRow = { sosId: string; fromUserId: string; fromUsername: string; at: string; status: "ACTIVE" | "RESOLVED"; recipients: Record<string, Sealed>; selfCopy: Sealed; acks: SosAck[]; resolvedAt?: string };
+type SosRow = { sosId: string; fromUserId: string; fromUsername: string; at: string; status: "ACTIVE" | "RESOLVED"; recipients: Record<string, Sealed>; selfCopy: Sealed; acks: SosAck[]; resolvedAt?: string; photo?: { mime: string; box: Box; bytes: number } };
+export type SosPhoto = { mime: "image/webp" | "image/jpeg" | "image/png"; data: Buffer };
+
+const MAX_PHOTO = 400_000;
+/** Validates an uploaded photo (data URL) by size and magic bytes, not by its claimed type. */
+export function parsePhoto(dataUrl: unknown): SosPhoto | undefined {
+  if (dataUrl == null || dataUrl === "") return undefined;
+  const m = /^data:(image\/(?:webp|jpeg|png));base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl));
+  if (!m) throw new BiruniError("INVALID_REQUEST", "Photo must be a WebP, JPEG or PNG image");
+  const data = Buffer.from(m[2], "base64");
+  if (data.length > MAX_PHOTO) throw new BiruniError("INVALID_REQUEST", "Photo too large (compress it first; max 400 KB)");
+  const magic = data.subarray(0, 12);
+  const ok = (m[1] === "image/jpeg" && magic[0] === 0xff && magic[1] === 0xd8) || (m[1] === "image/png" && magic.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))) || (m[1] === "image/webp" && magic.toString("ascii", 0, 4) === "RIFF" && magic.toString("ascii", 8, 12) === "WEBP");
+  if (!ok) throw new BiruniError("INVALID_REQUEST", "That file isn't the image type it claims to be");
+  return { mime: m[1] as SosPhoto["mime"], data };
+}
 
 const now = () => new Date().toISOString();
 
@@ -217,19 +232,22 @@ export class Social {
     return [...ids].map((id) => this.accounts.byId(id)!).filter(Boolean);
   }
 
-  raiseSos(me: Me, payload: SosPayload, opts: { contacts?: string[]; everyone?: boolean } = {}) {
+  raiseSos(me: Me, payload: SosPayload, opts: { contacts?: string[]; everyone?: boolean; photo?: SosPhoto } = {}) {
     const message = String(payload?.message ?? "").trim().slice(0, 1000) || "I need help.";
     const loc = payload.location && Number.isFinite(Number(payload.location.lat)) && Number.isFinite(Number(payload.location.lng))
       ? { lat: Number(payload.location.lat), lng: Number(payload.location.lng), accuracy: payload.location.accuracy ? Number(payload.location.accuracy) : undefined, at: payload.location.at, label: payload.location.label ? String(payload.location.label).slice(0, 120) : undefined }
       : undefined;
-    const body = JSON.stringify({ message, location: loc, tripTitle: payload.tripTitle, emergencyNote: payload.emergencyNote });
+    // A photo is encrypted once with its own key; only that key goes into each sealed copy.
+    const photoKey = opts.photo ? randomBytes(32) : undefined;
+    const body = JSON.stringify({ message, location: loc, tripTitle: payload.tripTitle, emergencyNote: payload.emergencyNote, photoKey: photoKey?.toString("base64") });
     const to = this.recipientsFor(me, opts);
     const row: SosRow = {
       sosId: `SOS-${randomUUID().slice(0, 8).toUpperCase()}`, fromUserId: me.userId, fromUsername: me.username, at: now(), status: "ACTIVE",
       recipients: Object.fromEntries(to.map((a) => [a.userId, seal(a.publicKey, body)])), selfCopy: seal(me.identity.publicKey, body), acks: [],
     };
+    if (opts.photo && photoKey) row.photo = { mime: opts.photo.mime, bytes: opts.photo.data.length, box: boxEncrypt(photoKey, opts.photo.data, `sos-photo:${row.sosId}`) };
     this.db.prepare("INSERT INTO sos (id, at, data) VALUES (?, ?, ?)").run(row.sosId, row.at, JSON.stringify(row));
-    return { sosId: row.sosId, sentTo: to.map((a) => a.username), at: row.at };
+    return { sosId: row.sosId, sentTo: to.map((a) => a.username), at: row.at, photo: row.photo ? { bytes: row.photo.bytes } : undefined };
   }
 
   private sosRow(id: string): SosRow {
@@ -253,8 +271,8 @@ export class Social {
     return this.allSos()
       .filter((r) => me.userId in r.recipients)
       .map((r) => {
-        const p = JSON.parse(unseal(me.identity, r.recipients[me.userId]).toString("utf8")) as SosPayload;
-        return { sosId: r.sosId, from: r.fromUsername, at: r.at, status: r.status, resolvedAt: r.resolvedAt, ...p, responses: r.acks.map((a) => ({ username: a.username, kind: a.kind, at: a.at })), myResponse: r.acks.filter((a) => a.userId === me.userId).at(-1)?.kind };
+        const { photoKey: _k, ...p } = JSON.parse(unseal(me.identity, r.recipients[me.userId]).toString("utf8")) as SosPayload & { photoKey?: string };
+        return { sosId: r.sosId, from: r.fromUsername, at: r.at, status: r.status, resolvedAt: r.resolvedAt, ...p, hasPhoto: !!r.photo, responses: r.acks.map((a) => ({ username: a.username, kind: a.kind, at: a.at })), myResponse: r.acks.filter((a) => a.userId === me.userId).at(-1)?.kind };
       });
   }
 
@@ -263,9 +281,20 @@ export class Social {
       .filter((r) => r.fromUserId === me.userId)
       .map((r) => ({
         sosId: r.sosId, at: r.at, status: r.status, resolvedAt: r.resolvedAt, sentTo: Object.keys(r.recipients).map((id) => this.accounts.byId(id)?.username ?? "?"),
-        ...(JSON.parse(unseal(me.identity, r.selfCopy).toString("utf8")) as SosPayload),
+        ...(({ photoKey: _k, ...p }) => p)(JSON.parse(unseal(me.identity, r.selfCopy).toString("utf8")) as SosPayload & { photoKey?: string }), hasPhoto: !!r.photo,
         responses: r.acks.map((a) => ({ username: a.username, kind: a.kind, at: a.at, note: a.note ? safeOpen(me.identity, a.note) : undefined })),
       }));
+  }
+
+  /** The photo, for the sender or a recipient only (key comes from their own sealed copy). */
+  photo(sosId: string, me: Me): SosPhoto {
+    const r = this.sosRow(sosId);
+    const sealed = r.fromUserId === me.userId ? r.selfCopy : r.recipients[me.userId];
+    if (!sealed) throw new BiruniError("POLICY_BLOCKED", "This alert wasn't sent to you");
+    if (!r.photo) throw new BiruniError("INVALID_REQUEST", "No photo on this alert");
+    const { photoKey } = JSON.parse(unseal(me.identity, sealed).toString("utf8")) as { photoKey?: string };
+    if (!photoKey) throw new BiruniError("INVALID_REQUEST", "No photo on this alert");
+    return { mime: r.photo.mime as SosPhoto["mime"], data: boxDecrypt(Buffer.from(photoKey, "base64"), r.photo.box, `sos-photo:${sosId}`) };
   }
 
   respond(sosId: string, me: Me, kind: SosAck["kind"], note?: string) {
@@ -285,6 +314,28 @@ export class Social {
     r.resolvedAt = now();
     this.saveSos(r);
     return { ok: true, sosId, status: r.status };
+  }
+
+  /** Account deletion: hand over or close their shared trips, drop their SOS alerts. */
+  purgeUser(me: Me) {
+    for (const s of this.shares(me.userId)) {
+      const others = s.members.filter((m) => m.userId !== me.userId);
+      if (!others.length) {
+        this.db.prepare("DELETE FROM share_items WHERE share_id = ?").run(s.shareId);
+        this.db.prepare("DELETE FROM shares WHERE id = ?").run(s.shareId);
+        continue;
+      }
+      if (s.leaderId === me.userId) this.makeLeader(s.shareId, me, others[0].userId);
+      this.remove(s.shareId, me, me.userId);
+    }
+    for (const r of this.allSos()) {
+      if (r.fromUserId === me.userId) this.db.prepare("DELETE FROM sos WHERE id = ?").run(r.sosId);
+      else if (me.userId in r.recipients) {
+        delete r.recipients[me.userId];
+        r.acks = r.acks.filter((a) => a.userId !== me.userId);
+        this.saveSos(r);
+      }
+    }
   }
 
   close() {

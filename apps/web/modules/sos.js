@@ -1,3 +1,6 @@
+import * as fmt from "./format.js";
+import { compressImage } from "./image.js";
+import { sfx, toast } from "./effects.js";
 // SOS: tell people you trust where you are and that you need help, fast.
 // Works in three layers so it never fails silently:
 //   1. Biruni alert to trip members / trusted contacts / opted-in helpers (+ SMS to your emergency contact)
@@ -27,6 +30,8 @@ export function initSos({ $, api, esc, S, secureLocal }) {
     <div class="chips left" id="sosQuick">${QUICK.map((q) => `<button type="button" class="chip">${q}</button>`).join("")}</div>
     <textarea id="sosMsg" rows="3" maxlength="1000" placeholder="What happened, where you are, what you need (e.g. 'Stuck in a cave 2 km above Tungnath, ankle injured, 2 people')."></textarea>
     <p class="small" id="sosLoc">📍 Finding your location…</p>
+    <div class="row"><label class="pill" for="sosPhotoIn">📷 Add a photo of where you are</label><input id="sosPhotoIn" type="file" accept="image/*" capture="environment" class="hidden" /><span class="small muted" id="sosPhotoInfo"></span></div>
+    <img id="sosPhotoPrev" class="sos-photo hidden" alt="Photo to send" />
     <label class="row small"><input type="checkbox" id="sosEveryone" /> Also alert everyone on this Biruni server who offered to help</label>
     <button class="pill danger big" id="sosSend">Send SOS</button>
     <div id="sosResult"></div>
@@ -40,7 +45,21 @@ export function initSos({ $, api, esc, S, secureLocal }) {
     if (t) $("sosMsg").value = $("sosMsg").value ? `${$("sosMsg").value}. ${t}` : t;
   };
 
-  let where = null;
+  let where = null, photo = null;
+  $("sosPhotoIn").onchange = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    $("sosPhotoInfo").textContent = "Compressing…";
+    try {
+      photo = await compressImage(f);
+      $("sosPhotoPrev").src = photo.dataUrl;
+      $("sosPhotoPrev").classList.remove("hidden");
+      $("sosPhotoInfo").textContent = `${fmt.bytes(photo.originalBytes)} → ${fmt.bytes(photo.bytes)} (${photo.width}×${photo.height}, ${photo.type.split("/")[1]}), encrypted for recipients`;
+    } catch (err) {
+      photo = null;
+      $("sosPhotoInfo").textContent = `Couldn't use that photo: ${err.message}`;
+    }
+  };
   async function locate() {
     $("sosLoc").textContent = "📍 Finding your location…";
     where = null;
@@ -51,7 +70,7 @@ export function initSos({ $, api, esc, S, secureLocal }) {
     where = live ?? (await secureLocal.lastLocation().catch(() => null));
     if (live) secureLocal.saveLocation(live).catch(() => {});
     $("sosLoc").innerHTML = where
-      ? `📍 ${where.live ? "Live location" : `Last saved location (${new Date(where.at).toLocaleString("en-IN")})`}: ${where.lat}, ${where.lng}${where.accuracy ? ` ±${where.accuracy} m` : ""} · <a href="${osm(where)}" target="_blank" rel="noopener">map</a>`
+      ? `📍 ${where.live ? "Live location" : `Last saved location (${fmt.relative(where.at)})`}: ${fmt.coords(where.lat, where.lng)}${where.accuracy ? ` ±${where.accuracy} m` : ""} · <a href="${osm(where)}" target="_blank" rel="noopener">map</a>`
       : "📍 Location unavailable (GPS off or no permission). Describe where you are in the message.";
   }
 
@@ -66,7 +85,11 @@ export function initSos({ $, api, esc, S, secureLocal }) {
     $("sosSend").disabled = true;
     $("sosSend").textContent = "Sending…";
     try {
-      const r = await api("POST", "/api/sos", { message, location: where ?? undefined, everyone: $("sosEveryone").checked, tripId: S.tripId || undefined });
+      const r = await api("POST", "/api/sos", { message, location: where ?? undefined, everyone: $("sosEveryone").checked, tripId: S.tripId || undefined, photo: photo?.dataUrl });
+      photo = null;
+      $("sosPhotoPrev").classList.add("hidden");
+      $("sosPhotoInfo").textContent = "";
+      sfx.success();
       $("sosResult").innerHTML = `<div class="card ok-card"><b>Sent.</b> ${r.sentTo.length ? `Alerted: ${r.sentTo.map(esc).join(", ")}.` : "No one is linked to you yet: add trusted contacts or share a trip in 👥 People."} ${r.emergencyContactSms ? `<br>Emergency contact: ${esc(r.emergencyContactSms)}` : ""}<br><span class="muted small">${esc(r.note)}</span></div>${r.sentTo.length ? "" : smsFallback(message)}`;
       refresh();
     } catch (e) {
@@ -84,9 +107,10 @@ export function initSos({ $, api, esc, S, secureLocal }) {
     btn.classList.toggle("pulse", active.some((x) => !x.myResponse));
     $("sosInbox").innerHTML = d.inbox.length
       ? d.inbox.map((x) => `<div class="card sos-card ${x.status === "ACTIVE" ? "active" : ""}">
-          <div class="row between"><b>🚨 ${esc(x.from)}</b><span class="muted small">${new Date(x.at).toLocaleString("en-IN")} · ${x.status === "ACTIVE" ? "needs help" : "safe now"}</span></div>
+          <div class="row between"><b>🚨 ${esc(x.from)}</b><span class="muted small">${fmt.dateTime(x.at)} (${fmt.relative(x.at)}) · ${x.status === "ACTIVE" ? "needs help" : "safe now"}</span></div>
           <p>${esc(x.message)}</p>
-          ${x.location ? `<p class="small">📍 ${x.location.lat}, ${x.location.lng} · <a href="${osm(x.location)}" target="_blank" rel="noopener">Open map</a> · <a href="https://www.google.com/maps/dir/?api=1&destination=${x.location.lat},${x.location.lng}" target="_blank" rel="noopener">Directions</a></p>` : `<p class="small muted">No location shared.</p>`}
+          ${x.location ? `<p class="small">📍 ${fmt.coords(x.location.lat, x.location.lng)} · <a href="${osm(x.location)}" target="_blank" rel="noopener">Open map</a> · <a href="https://www.google.com/maps/dir/?api=1&destination=${x.location.lat},${x.location.lng}" target="_blank" rel="noopener">Directions</a></p>` : `<p class="small muted">No location shared.</p>`}
+          ${x.hasPhoto ? `<img class="sos-photo" loading="lazy" src="/api/sos/${x.sosId}/photo" alt="Photo from ${esc(x.from)}" />` : ""}
           ${x.responses.length ? `<p class="small">${x.responses.map((r) => `${esc(r.username)} ${KIND_LABEL[r.kind] ?? r.kind}`).join(" · ")}</p>` : ""}
           ${x.status === "ACTIVE" ? `<div class="chips left" data-sos="${x.sosId}">
             <button class="chip" data-kind="coming">🏃 I'm coming</button><button class="chip" data-kind="called_authorities">📞 I called the authorities</button>
@@ -126,6 +150,13 @@ export function initSos({ $, api, esc, S, secureLocal }) {
     const e = ev.detail;
     if (e.type === "SOS" || e.type === "SOS_REPLY") {
       refresh();
+      if (e.type === "SOS") sfx.alarm(3);
+      else toast(e.detail, "ok");
+      // App in the background: a system notification (if allowed in 🛡️ Permissions).
+      if (document.hidden && typeof Notification !== "undefined" && Notification.permission === "granted")
+        navigator.serviceWorker?.ready
+          .then((r) => r.showNotification(e.type === "SOS" ? "🚨 Someone needs help" : "SOS update", { body: e.detail, tag: "biruni-sos", renotify: true, requireInteraction: e.type === "SOS", vibrate: [400, 200, 400, 200, 400] }))
+          .catch(() => {});
       if (e.type === "SOS" && !dlg.open && confirm(`${e.detail}. Open it now?`)) btn.click();
     }
   });
