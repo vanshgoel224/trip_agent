@@ -3,21 +3,22 @@
 import type { Store } from "../../packages/db";
 import { id, nowIso } from "../../packages/shared";
 
-export type ChatMode = "general" | "recovery" | "translate" | "splitwise" | "discover" | "maps" | "calendar" | "budget" | "custom";
+export type ChatMode = "general" | "recovery" | "translate" | "splitwise" | "discover" | "maps" | "calendar" | "budget" | "delivery" | "custom";
 
-const CORE = ["get_trip_status", "remember", "recall_memory", "speak"];
+const CORE = ["get_trip_status", "remember", "recall_memory", "speak", "make_plan", "update_plan", "record_feedback"];
 const RECOVERY = ["report_disruption", "approve_pending", "decline_pending", "undo_last_action", "mark_verified_way_home", "search_alternative_routes"];
 const ACTIVITIES = ["add_activity", "update_activity", "remove_activity"];
 const EXPENSES = ["add_expense", "list_expenses", "get_balances", "settle_up", "remove_expense", "splitwise_groups", "splitwise_push"];
 const CAL = ["calendar_list_events", "calendar_add_event"];
 const MAPS = ["where_am_i", "find_place", "nearby_places", "directions"];
+const DELIVERY = ["delivery_quote", "delivery_book", "delivery_track", "delivery_cancel", "delivery_list"];
 
 export const CHAT_MODES: Record<ChatMode, { label: string; icon: string; prompt: string; tools: string[] }> = {
   general: {
     label: "General assistant",
     icon: "✦",
     prompt: "Handle anything about the trip; use any tool.",
-    tools: [...CORE, ...RECOVERY, ...ACTIVITIES, ...EXPENSES, ...CAL, ...MAPS, "get_budget", "discover_places"],
+    tools: [...CORE, ...RECOVERY, ...ACTIVITIES, ...EXPENSES, ...CAL, ...MAPS, ...DELIVERY, "get_budget", "discover_places"],
   },
   recovery: {
     label: "Disruption recovery",
@@ -56,6 +57,12 @@ export const CHAT_MODES: Record<ChatMode, { label: string; icon: string; prompt:
     prompt: "Manage the traveller's plans and Google Calendar: read upcoming events, add trip plans, flag clashes with the itinerary.",
     tools: [...CORE, ...CAL, ...ACTIVITIES],
   },
+  delivery: {
+    label: "Send parcel / luggage",
+    icon: "📦",
+    prompt: "Help the traveller send luggage or parcels with Delhivery: get a quote first (from, to, weight, surface or express), show price and ETA, collect pickup address, drop address, contact name, Indian mobile number, pickup date and contents, then book ONLY after they explicitly confirm. Always say clearly when a booking is simulated. Track or cancel on request.",
+    tools: [...DELIVERY, "where_am_i", "find_place", "remember", "recall_memory"],
+  },
   custom: {
     label: "Custom chat",
     icon: "✎",
@@ -80,10 +87,20 @@ export const TOOL_GROUPS: Record<string, { label: string; tools: string[] }> = {
   discover: { label: "Discover places (Reddit/YouTube)", tools: ["discover_places"] },
   budget: { label: "Budget & obligations", tools: ["get_budget"] },
   voice: { label: "Speak aloud", tools: ["speak"] },
+  delivery: { label: "Delhivery parcels", tools: DELIVERY },
 };
 
 export type CustomSpec = { instructions: string; groups: string[] };
-export type Chat = { chatId: string; mode: ChatMode; title: string; tripId?: string; custom?: CustomSpec; createdAt: string; updatedAt: string };
+export type Chat = { chatId: string; mode: ChatMode; title: string; emoji: string; tripId?: string; custom?: CustomSpec; createdAt: string; updatedAt: string };
+
+export const DEFAULT_EMOJI: Record<ChatMode, string> = {
+  general: "✨", recovery: "🚨", translate: "🌐", splitwise: "💸", discover: "🧭", maps: "🗺️", calendar: "📅", budget: "💰", delivery: "📦", custom: "🛠️",
+};
+const cleanEmoji = (e: string | undefined, mode: ChatMode) => {
+  const t = (e ?? "").trim();
+  // one grapheme-ish token, max 8 code units (covers flags/ZWJ sequences)
+  return t && t.length <= 8 && !/[\p{L}\p{N}]{2,}/u.test(t) ? t : DEFAULT_EMOJI[mode];
+};
 
 /** Tools and prompt for a chat, including custom chats. */
 export function chatProfile(chat: Chat): { label: string; prompt: string; tools: string[] } {
@@ -97,19 +114,20 @@ export type StoredMessage = { messageId: string; chatId: string; role: "user" | 
 export class Chats {
   constructor(private store: Store) {}
 
-  create(mode: ChatMode, tripId?: string, title?: string, custom?: CustomSpec): Chat {
+  create(mode: ChatMode, tripId?: string, title?: string, custom?: CustomSpec, emoji?: string): Chat {
     if (!CHAT_MODES[mode]) throw new Error(`unknown chat mode ${mode}`);
     if (mode === "custom") {
       if (!custom?.instructions?.trim()) throw new Error("a custom chat needs instructions");
       custom = { instructions: custom.instructions.trim().slice(0, 2000), groups: (custom.groups ?? []).filter((g) => g in TOOL_GROUPS) };
     }
-    const c: Chat = { chatId: id("CHAT"), mode, title: title?.trim().slice(0, 60) || CHAT_MODES[mode].label, tripId, custom: mode === "custom" ? custom : undefined, createdAt: nowIso(), updatedAt: nowIso() };
+    const c: Chat = { chatId: id("CHAT"), mode, title: title?.trim().slice(0, 60) || CHAT_MODES[mode].label, emoji: cleanEmoji(emoji, mode), tripId, custom: mode === "custom" ? custom : undefined, createdAt: nowIso(), updatedAt: nowIso() };
     this.store.put("chats", c.chatId, c, { tripId, key: mode });
     return c;
   }
 
   get(chatId: string) {
-    return this.store.get<Chat>("chats", chatId);
+    const c = this.store.get<Chat>("chats", chatId);
+    return c && !c.emoji ? { ...c, emoji: DEFAULT_EMOJI[c.mode] } : c;
   }
 
   /** Most recent chat of a mode for this trip (or with no trip). */
@@ -118,11 +136,13 @@ export class Chats {
   }
 
   list(): Chat[] {
-    return this.store.list<Chat>("chats").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return this.store.list<Chat>("chats").map((c) => (c.emoji ? c : { ...c, emoji: DEFAULT_EMOJI[c.mode] })).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
-  update(chatId: string, patch: Partial<Pick<Chat, "title" | "tripId">>) {
+  update(chatId: string, patch: Partial<Pick<Chat, "title" | "tripId" | "emoji">>) {
     if (patch.title !== undefined) patch.title = patch.title.trim().slice(0, 60) || undefined;
+    if (patch.emoji !== undefined) patch.emoji = cleanEmoji(patch.emoji, this.get(chatId)?.mode ?? "general");
+    for (const k of Object.keys(patch) as (keyof typeof patch)[]) if (patch[k] === undefined && k !== "tripId") delete patch[k];
     const c = this.get(chatId);
     if (!c) throw new Error("unknown chat");
     const next = { ...c, ...patch, updatedAt: nowIso() };

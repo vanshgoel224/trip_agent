@@ -4,6 +4,7 @@
 import type { Store } from "../../../packages/db";
 import { id, inr, nowIso } from "../../../packages/shared";
 import { bus } from "../../../packages/events";
+import { bestMatch } from "../../../packages/shared/fuzzy";
 
 export type Expense = {
   expenseId: string;
@@ -17,26 +18,39 @@ export type Expense = {
   splitwiseId?: number;
 };
 
-const norm = (n: string) => n.trim().replace(/\s+/g, " ").replace(/^(i|me|myself|mai|main)$/i, "Me");
+const title = (n: string) => n.replace(/\b\p{L}/gu, (c) => c.toUpperCase());
+const norm = (n: string) => {
+  const t = n.trim().replace(/\s+/g, " ");
+  return /^(i|me|myself|mai|main|mein|mujhe|maine|self)$/i.test(t) ? "Me" : title(t.toLowerCase());
+};
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 export class ExpenseAgent {
   constructor(private store: Store) {}
 
+  /** Known people in this group. "raahul", "RAHUL", "Rahul " all resolve to the existing "Rahul". */
+  private resolve(groupId: string, name: string) {
+    const n = norm(name);
+    if (n === "Me") return n;
+    const people = new Set<string>();
+    for (const x of this.list(groupId)) for (const p of [x.paidBy, ...Object.keys(x.shares)]) people.add(p);
+    return bestMatch(n, [...people], (p) => p, 0.8)?.item ?? n;
+  }
+
   add(groupId: string, e: { description: string; amount: number; paidBy: string; splitAmong?: string[]; exactShares?: Record<string, number>; confirmDuplicate?: boolean }): Expense {
     if (!(e.amount > 0)) throw new Error("amount must be positive");
-    const paidBy = norm(e.paidBy);
+    const paidBy = this.resolve(groupId, e.paidBy);
     // Duplicate guard: models re-read chat history and may record the same expense twice.
     const dup = this.list(groupId).find((x) => x.kind === "EXPENSE" && x.paidBy === paidBy && Math.abs(x.amount - e.amount) < 0.01 && Date.now() - new Date(x.at).getTime() < 10 * 60_000);
     if (dup && !e.confirmDuplicate)
       throw new Error(`Already recorded: ${dup.paidBy} paid ${inr(dup.amount)} for "${dup.description}" (${dup.expenseId}). Not adding it again; only if the traveller confirms this is a separate second expense, call add_expense with confirm_duplicate=true.`);
     let shares: Record<string, number>;
     if (e.exactShares && Object.keys(e.exactShares).length) {
-      shares = Object.fromEntries(Object.entries(e.exactShares).map(([k, v]) => [norm(k), round2(v)]));
+      shares = Object.fromEntries(Object.entries(e.exactShares).map(([k, v]) => [this.resolve(groupId, k), round2(v)]));
       const sum = Object.values(shares).reduce((a, b) => a + b, 0);
       if (Math.abs(sum - e.amount) > 1) throw new Error(`exact shares add up to ${inr(sum)}, not ${inr(e.amount)}`);
     } else {
-      const people = [...new Set((e.splitAmong?.length ? e.splitAmong : [paidBy]).map(norm))];
+      const people = [...new Set((e.splitAmong?.length ? e.splitAmong : [paidBy]).map((p) => this.resolve(groupId, p)))];
       const each = Math.floor((e.amount * 100) / people.length) / 100;
       shares = Object.fromEntries(people.map((p) => [p, each]));
       shares[people[0]] = round2(e.amount - each * (people.length - 1)); // rounding remainder
@@ -48,7 +62,8 @@ export class ExpenseAgent {
   }
 
   settle(groupId: string, from: string, to: string, amount: number): Expense {
-    const x: Expense = { expenseId: id("SET"), groupId, description: `${norm(from)} paid ${norm(to)}`, amount: round2(amount), paidBy: norm(from), shares: { [norm(to)]: round2(amount) }, kind: "SETTLEMENT", at: nowIso() };
+    const f = this.resolve(groupId, from), t = this.resolve(groupId, to);
+    const x: Expense = { expenseId: id("SET"), groupId, description: `${f} paid ${t}`, amount: round2(amount), paidBy: f, shares: { [t]: round2(amount) }, kind: "SETTLEMENT", at: nowIso() };
     this.store.put("expenses", x.expenseId, x, { key: groupId });
     return x;
   }

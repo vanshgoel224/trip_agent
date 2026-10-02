@@ -5,6 +5,7 @@
 // policy decides. With no model configured, rule-based fallbacks are used.
 import { z } from "zod";
 import type { DisruptionClass } from "../../packages/domain";
+import { containsFuzzy } from "../../packages/shared/fuzzy";
 
 export type Intent = "REPORT_DISRUPTION" | "UNDO" | "APPROVE" | "DECLINE" | "STATUS" | "VERIFIED_WAY_HOME" | "OTHER";
 
@@ -100,19 +101,21 @@ Return ONLY JSON: {"intent": one of REPORT_DISRUPTION|UNDO|APPROVE|DECLINE|STATU
 SAFETY = any risk to the person. ROUTE_BLOCKED = the route is physically blocked. LOGISTICAL = cancellations, delays, missed connections.`;
 
 /** One retry on 429/503 (provider overload), within the same overall timeout. */
-export async function chat(ep: Endpoint, user: string, timeoutMs: number): Promise<string> {
+export const GENERIC_SYSTEM = "You are a precise assistant. Follow the user's instructions exactly and return only what they ask for.";
+
+export async function chat(ep: Endpoint, user: string, timeoutMs: number, system = SYSTEM): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   try {
-    return await chatOnce(ep, user, timeoutMs);
+    return await chatOnce(ep, user, timeoutMs, system);
   } catch (e) {
     const left = deadline - Date.now();
     if (!/HTTP (429|503)/.test(String(e)) || left < 1500) throw e;
     await new Promise((r) => setTimeout(r, 500));
-    return chatOnce(ep, user, left - 500);
+    return chatOnce(ep, user, left - 500, system);
   }
 }
 
-async function chatOnce(ep: Endpoint, user: string, timeoutMs: number): Promise<string> {
+async function chatOnce(ep: Endpoint, user: string, timeoutMs: number, system = SYSTEM): Promise<string> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -120,7 +123,7 @@ async function chatOnce(ep: Endpoint, user: string, timeoutMs: number): Promise<
       method: "POST",
       signal: ctrl.signal,
       headers: { "content-type": "application/json", ...(ep.apiKey ? { authorization: `Bearer ${ep.apiKey}` } : {}) },
-      body: JSON.stringify({ model: ep.model, temperature: 0, max_tokens: 512, messages: [{ role: "system", content: SYSTEM }, { role: "user", content: user }] }),
+      body: JSON.stringify({ model: ep.model, temperature: 0, max_tokens: 1024, messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
     });
     if (!res.ok) throw new Error(`model HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const j = (await res.json()) as { choices?: { message?: { content?: string } }[] };
@@ -132,13 +135,13 @@ async function chatOnce(ep: Endpoint, user: string, timeoutMs: number): Promise<
 
 export function rulesProposal(text: string): Proposal {
   const t = text.toLowerCase().trim();
-  const has = (...w: string[]) => w.some((x) => t.includes(x));
+  const has = (...w: string[]) => w.some((x) => t.includes(x)) || containsFuzzy(t, w.filter((x) => x.length >= 5));
   let intent: Intent = "OTHER";
   if (/^(undo|cancel that|ruko|wapas|revert)\b/.test(t) || has("undo")) intent = "UNDO";
   else if (/^(yes|haan|ha|ok|okay|approve|go ahead|book it|theek hai)\b/.test(t)) intent = "APPROVE";
   else if (/^(no|nahi|nahin|decline|don't|dont|leave it)\b/.test(t)) intent = "DECLINE";
   else if (has("already on", "found a way", "got a ride", "i'm on a", "i am on a", "reached")) intent = "VERIFIED_WAY_HOME";
-  else if (has("cancel", "delay", "missed", "stuck", "stranded", "blocked", "landslide", "flood", "strike", "bandh", "accident", "unsafe", "help", "breakdown", "broke down", "overbooked"))
+  else if (has("cancel", "canceled", "cancelled", "cancellation", "delay", "delayed", "missed", "stuck", "stranded", "blocked", "landslide", "flood", "strike", "bandh", "accident", "unsafe", "help", "breakdown", "broke down", "overbooked"))
     intent = "REPORT_DISRUPTION";
   else if (has("status", "where", "what's happening", "kya hua", "update")) intent = "STATUS";
   return { intent, source: "RULES" };

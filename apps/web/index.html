@@ -27,11 +27,13 @@
         </div>
       </div>
 
+      <input id="chatSearch" class="chat-search" placeholder="Search chats (typos OK)…" autocomplete="off" />
       <nav class="chat-list" id="chatList" aria-label="Chats"></nav>
 
       <div class="side-footer">
         <button class="side-link" id="memoryBtn">⌘ Memory graph</button>
         <button class="side-link" id="connBtn">⚙ Connections</button>
+        <button class="side-link" id="feedbackBtn">💬 Send feedback</button>
         <div class="toggles">
           <label><input type="checkbox" id="online" checked /> Online</label>
           <label><input type="checkbox" id="speak" /> Speak replies</label>
@@ -47,7 +49,8 @@
       <header class="topbar">
         <button class="icon-btn only-mobile" id="openSidebar" aria-label="Menu">☰</button>
         <div class="chat-title" id="chatTitle" title="Double-click to rename">Biruni</div>
-        <button class="icon-btn" id="renameBtn" title="Rename chat">✎</button>
+        <button class="icon-btn" id="renameBtn" title="Edit chat name & emoji">✎</button>
+        <button class="icon-btn" id="themeBtn" title="Theme: system / light / dark">◐</button>
         <button class="pill" id="topNewChat" title="New chat">＋ New</button>
         <button class="pill" id="tripBtn">Trip ▸</button>
       </header>
@@ -90,6 +93,12 @@
       <div class="drawer-body">
         <div id="tripCard" class="card muted">No trip selected.</div>
         <div id="recoveryCard" class="card hidden"></div>
+        <div class="card" id="autopilotCard">
+          <div class="row between"><div class="card-title" style="margin:0">Autopilot (L4)</div><label class="switch"><input type="checkbox" id="autopilotToggle" checked /> <span id="autopilotLabel">On</span></label></div>
+          <p class="muted small" style="margin:6px 0">Watches your trip on its own: operator cancellations → autonomous recovery within ₹2,000, leave-now alerts, reminders. Every decision is logged with its reason.</p>
+          <ol id="decisions" class="activity"></ol>
+        </div>
+        <div class="card hidden" id="planCard"><div class="card-title">Task plan</div><div id="planBody"></div></div>
         <div class="card">
           <div class="card-title">Map <span class="muted small" id="mapNote"></span></div>
           <div id="map"></div>
@@ -133,13 +142,31 @@
   <dialog id="customDialog">
     <form method="dialog" id="customForm" class="modal">
       <h2>Custom chat</h2>
-      <label>Name <input name="title" required maxlength="60" placeholder="e.g. Food finder, Visa helper, Packing list" /></label>
+      <div class="grid2 name-emoji">
+        <label>Name <input name="title" required maxlength="60" placeholder="e.g. Food finder, Visa helper" /></label>
+        <label>Emoji <input name="emoji" maxlength="8" value="🛠️" class="emoji-input" /></label>
+      </div>
       <label>What should this chat do? <textarea name="instructions" required rows="4" maxlength="2000" placeholder="e.g. Suggest pure-veg places near me under ₹300 per person and add the ones I like to my plans."></textarea></label>
       <div class="side-label" style="margin:0">Tools it can use</div>
       <div id="toolGroups" class="tool-groups"></div>
       <div class="row end">
         <button value="cancel" class="pill">Cancel</button>
         <button value="ok" class="pill accent">Create chat</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="editDialog">
+    <form method="dialog" id="editForm" class="modal">
+      <h2>Edit chat</h2>
+      <div class="grid2 name-emoji">
+        <label>Name <input name="title" required maxlength="60" /></label>
+        <label>Emoji <input name="emoji" maxlength="8" class="emoji-input" /></label>
+      </div>
+      <div class="emoji-grid" id="emojiGrid"></div>
+      <div class="row end">
+        <button value="cancel" class="pill">Cancel</button>
+        <button value="ok" class="pill accent">Save</button>
       </div>
     </form>
   </dialog>
@@ -158,6 +185,17 @@
         <input name="auth" placeholder="Authorization header (optional)" />
         <button class="pill accent">Connect</button>
       </form>
+      <h3>Autopilot demo</h3>
+      <p class="muted small">Simulate what an operator status feed would push for the selected trip; autopilot decides on its own.</p>
+      <div class="chips left">
+        <button class="chip" data-op="CANCELLED">🚫 Operator cancels my bus</button>
+        <button class="chip" data-op="DELAYED:45">⏱ Delay 45 min</button>
+        <button class="chip" data-op="DELAYED:200">⏱ Delay 200 min</button>
+        <button class="chip" data-op="CANCELLED:unverified">❓ Unconfirmed cancel rumour</button>
+      </div>
+      <h3>Feedback</h3>
+      <div id="feedbackSummary" class="muted small"></div>
+      <div class="row"><a class="pill" href="/api/feedback.csv">Export CSV</a></div>
       <h3>Demo scenarios</h3>
       <p class="muted small">Competition scenarios on simulated rails. Each opens a recovery chat.</p>
       <div id="scenarioList" class="chips left"></div>

@@ -30,7 +30,7 @@ async function loadChats() {
   for (const c of S.chats) (groups[c.mode] ??= []).push(c);
   $("chatList").innerHTML = S.modes
     .filter((m) => groups[m.mode])
-    .map((m) => `<div class="chat-group">${m.icon} ${esc(m.label)}</div>` + groups[m.mode].map((c) => `<button class="chat-item ${c.chatId === S.chatId ? "active" : ""}" data-chat="${c.chatId}"><span class="t">${esc(c.title)}</span><span class="x" data-del="${c.chatId}" title="Delete">✕</span></button>`).join(""))
+    .map((m) => `<div class="chat-group">${esc(m.label)}</div>` + groups[m.mode].map((c) => `<button class="chat-item ${c.chatId === S.chatId ? "active" : ""}" data-chat="${c.chatId}"><span class="e">${esc(c.emoji ?? m.icon)}</span><span class="t">${esc(c.title)}</span><span class="x" data-del="${c.chatId}" title="Delete">✕</span></button>`).join(""))
     .join("") || `<p class="muted small" style="padding:8px 10px">No chats yet.</p>`;
 }
 
@@ -56,7 +56,7 @@ async function openChat(chatId) {
   }
   const { chat, messages } = data;
   if (chat.tripId && chat.tripId !== S.tripId) setTrip(chat.tripId, false);
-  $("chatTitle").textContent = `${modeInfo(chat.mode).icon} ${chat.title}`;
+  $("chatTitle").textContent = `${chat.emoji ?? modeInfo(chat.mode).icon} ${chat.title}`;
   $("translateBar").classList.toggle("hidden", chat.mode !== "translate");
   $("input").placeholder = chat.mode === "translate" ? "Type something to translate…" : chat.mode === "splitwise" ? "e.g. I paid 1200 for dinner, split with Rahul and Priya" : chat.mode === "general" ? "Ask anything — filed in the right chat too. /recall <name> · /btw <side question, not saved>" : "Ask Biruni anything…  (/btw for an unsaved side question)";
   const box = $("messages");
@@ -104,7 +104,7 @@ function addMsg(role, text, m = {}) {
   const tools = (m.tools ?? []).map((t) => `<span class="tool-chip">${esc(t)}</span>`).join("");
   const filed = (m.copiedTo ?? []).map((c) => `<button class="filed" data-chat="${c.chatId}">↪ filed in ${esc(modeInfo(c.mode).icon)} ${esc(modeInfo(c.mode).label)}</button>`).join("");
   const from = m.copiedFrom ? `<span class="copied-tag">↪ from General</span>` : "";
-  const meta = role === "assistant" ? `<div class="meta">${from}${tools}${m.source ? `<span>${esc(String(m.source).replace("ONLINE_MODEL:", "").replace("OFFLINE_MODEL:", "offline · "))}</span>` : ""}<button class="play" data-play="${esc(text)}">🔊</button>${filed}</div>` : from ? `<div class="meta">${from}</div>` : "";
+  const meta = role === "assistant" ? `<div class="meta">${from}${tools}${m.source ? `<span>${esc(String(m.source).replace("ONLINE_MODEL:", "").replace("OFFLINE_MODEL:", "offline · "))}</span>` : ""}<button class="play" data-play="${esc(text)}">🔊</button>${m.messageId && m.messageId !== "EPHEMERAL" ? `<button class="fb" data-fb="1" data-mid="${m.messageId}" title="Good answer">👍</button><button class="fb" data-fb="-1" data-mid="${m.messageId}" title="Bad answer">👎</button>` : ""}${filed}</div>` : from ? `<div class="meta">${from}</div>` : "";
   d.innerHTML = `<div class="bubble">${fmt(text)}</div>${meta}`;
   box.append(d);
   box.scrollTop = box.scrollHeight;
@@ -343,6 +343,7 @@ async function refreshTrip() {
 }
 
 let undoDeadline = 0;
+const rated = new Set(store.get("rated", []));
 function renderTrip() {
   const { trip, incident, ledger, obligations, runtime } = S.snap;
   const acts = trip.activities ?? [];
@@ -366,7 +367,8 @@ function renderTrip() {
     rc.innerHTML = `<div class="card-title">⚠ ${esc(incident.classification ?? "Disruption")}: ${esc(incident.description)}</div><ul class="check">${li.join("")}</ul>
       ${incident.chosenOption ? `<div class="small">New: <b>${esc(incident.chosenOption.vendorName)}</b> · ${incident.chosenOption.departure.slice(11, 16)} · ${inr(incident.chosenOption.price)}</div>` : ""}
       ${p ? `<div class="small" style="margin-top:8px">${esc(p.message)}</div><div class="approve-row"><button class="pill accent" id="approveBtn">Approve</button><button class="pill" id="declineBtn">Decline</button></div>` : ""}
-      <button class="undo-btn hidden" id="undoBtn">UNDO</button>`;
+      <button class="undo-btn hidden" id="undoBtn">UNDO</button>
+      ${incident.step === "CLOSED" && incident.chosenOption && !rated.has(incident.incidentId) ? `<div class="small" style="margin-top:8px">Rate ${esc(incident.chosenOption.vendorName)}:</div><div class="stars" data-rate-inc="${incident.incidentId}" data-vendor="${esc(incident.chosenOption.vendorId)}" data-vname="${esc(incident.chosenOption.vendorName)}">${[1, 2, 3, 4, 5].map((n) => `<button data-star="${n}">★</button>`).join("")}</div>` : ""}`;
     undoDeadline = incident.step === "UNDO_WINDOW_OPEN" ? Date.now() + S.snap.undoRemainingMs : 0;
     tickUndo();
     $("approveBtn")?.addEventListener("click", () => api("POST", `/api/recovery/${incident.incidentId}/approve`, { approve: true }).then(refreshTrip));
@@ -375,6 +377,23 @@ function renderTrip() {
   }
   $("online").checked = runtime.online;
   refreshDevice();
+  refreshAutopilot();
+}
+
+async function refreshAutopilot() {
+  if (!S.tripId) return;
+  const a = await api("GET", `/api/autopilot/${S.tripId}`).catch(() => null);
+  if (!a) return;
+  $("autopilotToggle").checked = a.enabled;
+  $("autopilotLabel").textContent = a.enabled ? "On" : "Off";
+  $("decisions").innerHTML = a.decisions.slice(-8).reverse().map((d) => `<li><span class="t">${d.at.slice(11, 16)}</span><b class="dec-${d.decided}">${d.decided}</b> ${esc(d.signal)}<br><span class="muted">${esc(d.why)}${d.action ? ` · ${esc(d.action)}` : ""}</span></li>`).join("") || `<li class="muted">No autonomous decisions yet.</li>`;
+}
+$("autopilotToggle").onchange = (e) => S.tripId && api("POST", `/api/autopilot/${S.tripId}`, { enabled: e.target.checked }).then(refreshAutopilot);
+
+function renderPlan(plan) {
+  if (!plan) return;
+  $("planCard").classList.remove("hidden");
+  $("planBody").innerHTML = `<div class="small"><b>${esc(plan.goal)}</b></div>` + plan.steps.map((st, i) => `<div class="plan-step ${st.status}">${st.status === "done" ? "✓" : st.status === "blocked" ? "✗" : st.status === "skipped" ? "–" : "○"} ${i + 1}. ${esc(st.text)}${st.result ? ` <span class="muted">— ${esc(st.result)}</span>` : ""}</div>`).join("");
 }
 
 function tickUndo() {
@@ -399,6 +418,8 @@ function connectEvents() {
     $("activity").prepend(li);
     while ($("activity").children.length > 200) $("activity").lastChild.remove();
     if (e.type === "IMPACT") refreshDevice();
+    if (e.type === "PLAN") renderPlan(e.data);
+    if (e.type === "AUTOPILOT") refreshAutopilot();
     if (e.type === "VOICE" && e.data?.kind === "CHECKIN") $("checkin").classList.remove("hidden");
     if (["STEP", "TRIP_STATUS", "ITINERARY", "ACTIVITY", "LEDGER_COMMIT", "UNDO_EXPIRED", "UNDO_CANCELLED", "ROUTE", "LOCATION"].includes(e.type)) scheduleRefresh();
   };
@@ -538,6 +559,8 @@ async function openConnections() {
     row("Maps", true, esc(c.maps.provider) + " · no key needed"),
   ].join("");
   renderMcp(c.mcpServers);
+  const fb = await api("GET", "/api/feedback").catch(() => null);
+  if (fb) $("feedbackSummary").innerHTML = `${fb.summary.total} entries · 👍 ${fb.summary.messages.up} / 👎 ${fb.summary.messages.down} · vendors ${fb.summary.avgVendor ?? "—"}★ · trips ${fb.summary.avgTrip ?? "—"}★${fb.summary.recentComments.length ? "<br>" + fb.summary.recentComments.slice(0, 3).map((c) => `“${esc(c.comment)}”`).join("<br>") : ""}`;
   const sc = await api("GET", "/api/scenarios");
   $("scenarioList").innerHTML = sc.map((s) => `<button class="chip" data-scenario="${s.name}" title="${esc(s.trigger)}">${s.name}: ${esc(s.title)}</button>`).join("");
   $("connDialog").showModal();
@@ -612,6 +635,35 @@ $("memExport").onclick = async () => {
 // ---------------- wiring ----------------
 document.addEventListener("click", async (e) => {
   if (e.target.closest("[data-custom]")) return openCustom();
+  const fbBtn = e.target.closest("[data-fb]");
+  if (fbBtn) {
+    const rating = Number(fbBtn.dataset.fb);
+    const comment = rating < 0 ? prompt("What was wrong? (optional)") ?? "" : "";
+    await api("POST", "/api/feedback", { kind: "message", rating, comment, chatId: S.chatId, messageId: fbBtn.dataset.mid, tripId: S.tripId || undefined });
+    fbBtn.parentElement.querySelectorAll("[data-fb]").forEach((b) => b.classList.toggle("on", b === fbBtn));
+    return;
+  }
+  const star = e.target.closest("[data-star]");
+  if (star) {
+    const box = star.closest("[data-rate-inc]");
+    const rating = Number(star.dataset.star);
+    await api("POST", "/api/feedback", { kind: "vendor", rating, vendorId: box.dataset.vendor, about: box.dataset.vname, incidentId: box.dataset.rateInc, tripId: S.tripId || undefined });
+    rated.add(box.dataset.rateInc);
+    store.set("rated", [...rated]);
+    box.outerHTML = `<div class="small" style="margin-top:8px">Thanks — rated ${rating}★. It updates this vendor's score for future recoveries.</div>`;
+    return;
+  }
+  const op = e.target.closest("[data-op]");
+  if (op) {
+    if (!S.tripId) return alert("Pick or create a trip first");
+    const [status, extra] = op.dataset.op.split(":");
+    const body = { tripId: S.tripId, status, ...(status === "DELAYED" ? { delayMin: Number(extra) } : {}), ...(extra === "unverified" ? { source: "social media rumour" } : {}) };
+    $("connDialog").close();
+    const r = await api("POST", "/api/sim/operator", body);
+    openDrawer();
+    addMsg("assistant", `Autopilot: ${r.decisions.map((d) => `${d.decided} — ${d.why}`).join(" | ") || "no action needed"}`, { source: "autopilot" });
+    return;
+  }
   const t = e.target.closest("[data-mode],[data-chat],[data-del],[data-say],[data-play],[data-close],[data-scenario],[data-mcp-re],[data-mcp-del]");
   if (!t) return;
   if (t.dataset.del) {
@@ -665,7 +717,7 @@ $("customDialog").addEventListener("close", async () => {
   if ($("customDialog").returnValue !== "ok") return;
   const fd = new FormData($("customForm"));
   try {
-    const c = await api("POST", "/api/chats", { mode: "custom", tripId: S.tripId || undefined, title: fd.get("title"), custom: { instructions: fd.get("instructions"), groups: fd.getAll("groups") } });
+    const c = await api("POST", "/api/chats", { mode: "custom", tripId: S.tripId || undefined, title: fd.get("title"), emoji: fd.get("emoji"), custom: { instructions: fd.get("instructions"), groups: fd.getAll("groups") } });
     await loadChats();
     await openChat(c.chatId);
     $("input").focus();
@@ -673,25 +725,74 @@ $("customDialog").addEventListener("close", async () => {
     alert(e.message);
   }
 });
-async function renameChat() {
+const EMOJIS = "✨🚨🌐💸🧭🗺️📅💰📦🛠️🏖️🏔️🚆🚌✈️🚕🛵🍛☕🍜🌶️🥗🏨🏕️🎒🧳🗓️📍⛰️🌊🎉❤️⭐🔥💡📝🙏👨‍👩‍👧🐘🕌🛕".match(/\p{Extended_Pictographic}(\uFE0F)?(\u200D\p{Extended_Pictographic}(\uFE0F)?)*/gu);
+function renameChat() {
   if (!S.chatId) return;
-  const cur = S.chats.find((c) => c.chatId === S.chatId)?.title ?? "";
-  const t = prompt("Rename chat", cur);
-  if (!t || t === cur) return;
-  await api("POST", `/api/chats/${S.chatId}/rename`, { title: t });
+  const c = S.chats.find((x) => x.chatId === S.chatId);
+  if (!c) return;
+  $("editForm").title.value = c.title;
+  $("editForm").emoji.value = c.emoji ?? "";
+  $("emojiGrid").innerHTML = EMOJIS.map((e) => `<button type="button" data-emoji="${e}">${e}</button>`).join("");
+  $("editDialog").showModal();
+}
+$("emojiGrid").onclick = (e) => {
+  const b = e.target.closest("[data-emoji]");
+  if (b) $("editForm").emoji.value = b.dataset.emoji;
+};
+$("editDialog").addEventListener("close", async () => {
+  if ($("editDialog").returnValue !== "ok" || !S.chatId) return;
+  await api("POST", `/api/chats/${S.chatId}/rename`, { title: $("editForm").title.value, emoji: $("editForm").emoji.value });
   await loadChats();
   await openChat(S.chatId);
-}
+});
 $("renameBtn").onclick = renameChat;
 $("chatTitle").ondblclick = renameChat;
 const openDrawer = () => { $("drawer").classList.remove("hidden"); refreshTrip(); };
 $("tripBtn").onclick = () => ($("drawer").classList.contains("hidden") ? openDrawer() : $("drawer").classList.add("hidden"));
 $("closeDrawer").onclick = () => $("drawer").classList.add("hidden");
 $("connBtn").onclick = () => openConnections().catch((e) => alert(e.message));
+$("feedbackBtn").onclick = async () => {
+  const comment = prompt("Your feedback for Biruni (what works, what doesn't, ideas):");
+  if (!comment?.trim()) return;
+  const r = prompt("Overall rating 1-5 (optional):");
+  await api("POST", "/api/feedback", { kind: "feature", comment, rating: r && /^[1-5]$/.test(r.trim()) ? Number(r) : undefined, tripId: S.tripId || undefined });
+  alert("Thanks — saved.");
+};
 $("memoryBtn").onclick = () => openMemory().catch((e) => alert(e.message));
 $("openSidebar").onclick = () => $("sidebar").classList.add("open");
 const closeSidebar = () => $("sidebar").classList.remove("open");
 $("closeSidebar").onclick = closeSidebar;
+
+// Theme: system → light → dark (persisted per device).
+const THEMES = ["system", "light", "dark"];
+function applyTheme(t) {
+  if (t === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", t);
+  $("themeBtn").textContent = t === "light" ? "☀" : t === "dark" ? "☾" : "◐";
+  $("themeBtn").title = `Theme: ${t} (click to change)`;
+  const dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#0a0a0a" : "#fafafa");
+}
+applyTheme(store.get("theme", "system"));
+$("themeBtn").onclick = () => {
+  const next = THEMES[(THEMES.indexOf(store.get("theme", "system")) + 1) % THEMES.length];
+  store.set("theme", next);
+  applyTheme(next);
+};
+
+// Fuzzy chat search (titles + messages, typos OK).
+let searchTimer;
+$("chatSearch").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    const q = e.target.value.trim();
+    if (q.length < 2) return loadChats();
+    const hits = await api("GET", `/api/chats/search?q=${encodeURIComponent(q)}`);
+    $("chatList").innerHTML = hits.length
+      ? `<div class="chat-group">Results</div>` + hits.map((h) => `<button class="chat-item" data-chat="${h.chatId}"><span class="e">${esc(h.emoji ?? "•")}</span><span class="t">${esc(h.title)}${h.snippet ? `<span class="snip">${esc(h.snippet)}</span>` : ""}</span></button>`).join("")
+      : `<p class="muted small" style="padding:8px 10px">No chats match "${esc(q)}".</p>`;
+  }, 150);
+});
 
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); $("topNewChat").click(); }

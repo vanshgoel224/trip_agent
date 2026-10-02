@@ -1,5 +1,5 @@
 import { config } from "../../packages/shared";
-import { DelhiveryOrnamental, MockBookingProvider, MockRoutingProvider, type BookingProvider, type RoutingProvider } from "./delhivery";
+import { MockBookingProvider, MockRoutingProvider, type BookingProvider, type RoutingProvider } from "./delhivery";
 import { GnaniProvider, MockGnaniProvider, type VoiceProvider } from "./gnani";
 import { MockPaymentProvider, PineLabsProvider, type PaymentProvider } from "./pine-labs";
 import { MockSetuProvider, SetuProvider, type FinancialDataProvider } from "./setu-aa";
@@ -12,7 +12,6 @@ export type Providers = {
   booking: BookingProvider;
   financial: FinancialDataProvider;
   holdings: HoldingsProvider;
-  delhivery: DelhiveryOrnamental;
 };
 
 /**
@@ -30,14 +29,13 @@ export function createProviders(mode = config.providerMode): Providers {
     booking: new MockBookingProvider(), // no booking rail is named in the design artifact
     financial: live("SETU_API_KEY") ? new SetuProvider() : new MockSetuProvider(),
     holdings: live("ZERODHA_API_KEY") ? new ZerodhaProvider() : new MockZerodhaProvider(),
-    delhivery: new DelhiveryOrnamental(), // ornamental for now
   };
 }
 
 export function providerStatus(p: Providers) {
   const name = (o: object) => o.constructor.name;
   return {
-    gnani: name(p.voice), pineLabs: name(p.payments), transport: name(p.routing), delhivery: p.delhivery.status(),
+    gnani: name(p.voice), pineLabs: name(p.payments), transport: name(p.routing),
     setuAA: name(p.financial), zerodha: name(p.holdings), booking: name(p.booking),
   };
 }

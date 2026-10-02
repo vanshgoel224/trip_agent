@@ -31,6 +31,9 @@ export const TABLES = [
   "memory_links",
   "mcp_servers",
   "device_readings",
+  "parcels",
+  "feedback",
+  "autopilot",
 ] as const;
 
 export type Table = (typeof TABLES)[number];

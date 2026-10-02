@@ -9,6 +9,7 @@ import { Store } from "../../packages/db";
 // ---- fake OpenAI-compatible model: replays a script of tool calls, then a final text ----
 let script: { tool?: string; args?: object; text?: string }[] = [];
 let seen: any[] = [];
+const lastToolReq = () => seen.filter((r) => r.tools).at(-1);
 const fake: Server = createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c)).on("end", () => {
@@ -80,7 +81,7 @@ test("chat agent runs model tool calls and persists the conversation", async () 
   assert.equal(b.chats.messages(chat.chatId).length, 2);
   assert.deepEqual(b.expenses.balances(tripId), { Me: 1600, Rahul: -800, Priya: -800 });
   // Tool scoping: a splitwise chat never sees recovery/payment tools.
-  const toolNames = seen.at(-1).tools.map((t: any) => t.function.name);
+  const toolNames = lastToolReq().tools.map((t: any) => t.function.name);
   assert.ok(!toolNames.includes("report_disruption") && !toolNames.includes("approve_pending"));
   noModel();
   b.shutdown();
@@ -94,8 +95,8 @@ test("model cannot approve an over-authority spend without the traveller's expli
   script = [{ tool: "approve_pending" }, { text: "I need your confirmation." }];
   await b.conversation.send(chat.chatId, "hmm what are the options");
   assert.equal(payments.chargeCalls, 0, "not approved: message was not a yes");
-  const toolResult = seen.at(-1).messages.find((m: any) => m.role === "tool");
-  assert.match(toolResult.content, /not an explicit yes/);
+  const toolResult = lastToolReq().messages.find((m: any) => m.role === "tool");
+  assert.match(toolResult.content, /not an explicit/);
   script = [{ tool: "approve_pending" }, { text: "Booked." }];
   await b.conversation.send(chat.chatId, "yes, book it");
   assert.equal(payments.chargeCalls, 1);
@@ -171,7 +172,7 @@ test("custom chats: traveller-written instructions and only the tool groups they
   assert.deepEqual(chat.custom?.groups, ["maps", "plans"], "unknown groups dropped");
   script = [{ text: "Sure." }];
   await b.conversation.send(chat.chatId, "find me lunch");
-  const req = seen.at(-1);
+  const req = lastToolReq();
   const names = req.tools.map((t: any) => t.function.name);
   assert.ok(names.includes("nearby_places") && names.includes("add_activity") && names.includes("remember"));
   assert.ok(!names.includes("report_disruption") && !names.includes("add_expense") && !names.includes("approve_pending"));
@@ -181,12 +182,29 @@ test("custom chats: traveller-written instructions and only the tool groups they
   b.shutdown();
 });
 
-test("Delhivery is ornamental: active, but returns empty results without a key", async () => {
-  const { DelhiveryOrnamental } = await import("../../services/integrations/delhivery");
-  const d = new DelhiveryOrnamental();
+test("Delhivery booking: quote, explicit-yes guard, simulated AWB, tracking stages, cancel rules", async () => {
+  const { Delhivery } = await import("../../services/integrations/delhivery");
+  const store = new Store();
+  const d = new Delhivery(store);
   assert.equal(d.status().active, true);
-  assert.deepEqual((await d.geocode("Pune")).results, []);
-  assert.deepEqual((await d.route({}, {})).routes, []);
+  // Quote without network: stub the place lookup.
+  const osm = await import("../../services/integrations/openstreetmap");
+  const q = await (d as any).quote.call(Object.assign(Object.create(d), {}), "Pune", "Goa", 8).catch(() => null);
+  void osm;
+  const quote = q ?? { quoteId: "DLQ-TEST", from: "Pune", to: "Goa", weightKg: 8, service: "surface", price: 900, etaDays: 3, distanceKm: 380, simulated: true, createdAt: new Date().toISOString() };
+  if (!q) store.put("parcels", quote.quoteId, quote, { key: "QUOTE" });
+  await assert.rejects(d.book({ quoteId: quote.quoteId, pickupAddress: "a", dropAddress: "b", contactName: "V", phone: "12345", pickupDate: "2026-10-05", contents: "bag" }), /valid Indian mobile/);
+  const p = await d.book({ quoteId: quote.quoteId, pickupAddress: "FC Road, Pune", dropAddress: "Baga, Goa", contactName: "Vansh", phone: "+91 98765 43210", pickupDate: "2026-10-05", contents: "1 suitcase" });
+  assert.equal(p.simulated, true);
+  assert.match(p.awb, /^\d{13}$/);
+  assert.equal(d.track(p.awb).status, "PICKUP_SCHEDULED");
+  process.env.DELHIVERY_SIM_STAGE_MIN = "0.0001";
+  await wait(30);
+  assert.equal(d.track(p.bookingId).status, "DELIVERED");
+  assert.throws(() => d.cancel(p.bookingId), /already delivered/);
+  delete process.env.DELHIVERY_SIM_STAGE_MIN;
+  const p2 = await d.book({ quoteId: quote.quoteId, pickupAddress: "x", dropAddress: "y", contactName: "V", phone: "9876543210", pickupDate: "2026-10-06", contents: "box" });
+  assert.equal(d.cancel(p2.awb).status, "CANCELLED");
 });
 
 test("General messages are auto-filed into the matching function chat (created if missing)", async () => {
@@ -244,7 +262,7 @@ test("/btw side questions are answered but leave no trace: no history, no memory
   assert.equal(b.chats.messages(chat.chatId).length, 0, "nothing persisted");
   assert.equal(b.memory.nodes().length, nodesBefore, "memory untouched");
   assert.equal(r.copiedTo.length, 0);
-  const offered = seen.at(-2).tools.map((t: any) => t.function.name);
+  const offered = lastToolReq().tools.map((t: any) => t.function.name);
   for (const w of ["remember", "add_expense", "add_activity", "report_disruption", "approve_pending", "calendar_add_event"]) assert.ok(!offered.includes(w), `${w} not offered`);
   assert.ok(offered.includes("get_trip_status"));
   noModel();
@@ -262,5 +280,68 @@ test("memory rejects junk facts and /forget removes things", async () => {
   assert.match((await b.conversation.send(chat.chatId, "/forget window seat")).message.text, /Forgotten: window seat/);
   assert.equal(b.memory.search("window").length, 0);
   assert.equal(b.memory.links().length, 0, "links removed with the node");
+  b.shutdown();
+});
+
+test("critical thinking: the self-check replaces a draft that contradicts the tool results", async () => {
+  await withModel();
+  const { b, tripId } = await setup("A");
+  const chat = b.conversation.newChat("splitwise", tripId);
+  script = [
+    { tool: "add_expense", args: { description: "cab", amount: 900, paid_by: "Me", split_among: ["Me", "Rahul", "Priya"] } },
+    { text: "Rahul and Priya each owe you ₹450." }, // wrong: it's ₹300 each
+    { text: '{"ok": false, "issues": ["900/3 is 300, not 450"], "revised": "Rahul and Priya each owe you ₹300."}' },
+  ];
+  const r = await b.conversation.send(chat.chatId, "I paid 900 for the cab split 3 ways");
+  assert.equal(r.message.text, "Rahul and Priya each owe you ₹300.");
+  assert.match(r.source, /self-corrected/);
+  const criticReq = seen.at(-1);
+  assert.match(criticReq.messages[1].content, /fact-checker/);
+  assert.ok(!criticReq.tools, "the checker call gets no tools");
+  noModel();
+  b.shutdown();
+});
+
+test("multi-step tasks: make_plan / update_plan are tracked", async () => {
+  await withModel();
+  const { b, tripId } = await setup("A");
+  const chat = b.conversation.newChat("general", tripId);
+  script = [
+    { tool: "make_plan", args: { goal: "Plan evening", steps: ["Find dinner", "Add to plans"] } },
+    { tool: "update_plan", args: { step: 1, status: "done", result: "Gunpowder" } },
+    { tool: "update_plan", args: { step: 2, status: "done" } },
+    { text: "All set." },
+  ];
+  await b.conversation.send(chat.chatId, "plan my evening");
+  const plan = b.store.get<any>("autopilot", `PLAN-${chat.chatId}`);
+  assert.deepEqual(plan.steps.map((s: any) => s.status), ["done", "done"]);
+  noModel();
+  b.shutdown();
+});
+
+test("chats carry an emoji and a name; bad emoji input falls back to the mode default", async () => {
+  const { b, tripId } = await setup("A");
+  const c = b.conversation.newChat("general", tripId, "Goa plans", undefined, "🏖️");
+  assert.equal(c.emoji, "🏖️");
+  assert.equal(b.conversation.newChat("splitwise", tripId).emoji, "💸");
+  assert.equal(b.conversation.newChat("maps", tripId, undefined, undefined, "hello").emoji, "🗺️");
+  const u = b.chats.update(c.chatId, { title: "  Goa evenings ", emoji: "🌅" });
+  assert.equal(u.title, "Goa evenings");
+  assert.equal(u.emoji, "🌅");
+  assert.equal(b.chats.update(c.chatId, { emoji: "🎉" }).title, "Goa evenings", "editing emoji keeps the name");
+  b.shutdown();
+});
+
+test("consent guard: a hedged 'book it? not yet' never books", async () => {
+  await withModel();
+  const { b, tripId, payments } = await setup("B");
+  await b.orchestrator.reportDisruption(tripId, "bus cancelled");
+  const chat = b.conversation.newChat("recovery", tripId);
+  for (const t of ["ok book it? not yet", "yes but wait", "haan... abhi nahi", "don't book it yet ok"]) {
+    script = [{ tool: "approve_pending" }, { text: "Waiting." }];
+    await b.conversation.send(chat.chatId, t);
+  }
+  assert.equal(payments.chargeCalls, 0);
+  noModel();
   b.shutdown();
 });

@@ -13,8 +13,14 @@ On top of the spec's recovery engine there is a conversational layer:
 - OpenStreetMap data on a MapLibre map, with directions
 - Google Calendar, Reddit, YouTube and Splitwise connectors
 - connecting **external MCP servers**
+- an **L4 autopilot** that acts on its own, inside the ₹2,000 authority
+- a **self-check** pass before replies go out
+- feedback collection
+- typo-tolerant matching everywhere
+- Delhivery parcel/luggage **booking** (simulated until a key is added)
+- light and dark themes, with an emoji and name for every chat
 
-**Status, bluntly:** the recovery engine, guardrails, chats, memory, expense splitting, maps, translation (text) and the MCP client are tested and work. Live adapters for Gnani, Pine Labs, Setu AA, Zerodha, Google Calendar, Reddit, YouTube and Splitwise are written from each provider's official docs or SDK but **have not been run against real accounts**: no keys were available. Without keys, those rails run on the simulator, and voice uses the device's built-in voices. **Delhivery is decorative for now:** it shows as active but returns empty results. See [What is not built](#what-is-not-built).
+**Status, bluntly (as of the latest commit):** the recovery engine, guardrails, chats, memory, expense splitting, maps, translation (text) and the MCP client are tested and work. Live adapters for Gnani, Pine Labs, Setu AA, Zerodha, Google Calendar, Reddit, YouTube and Splitwise are written from each provider's official docs or SDK but **have not been run against real accounts**: no keys were available. Without keys, those rails run on the simulator, and voice uses the device's built-in voices. Delhivery bookings are simulated until a key is added. See [What is not built](#what-is-not-built).
 
 ## Quickstart
 
@@ -23,7 +29,7 @@ Requires Node ≥ 22.5. Persistence uses the built-in `node:sqlite`, which is st
 ```bash
 npm install
 cp .env.example .env   # put GEMINI_API_KEY (or ONLINE_MODEL_API_KEY) in it; .env is git-ignored
-npm test          # 38 tests: authority, payments, idempotency, recovery, restart, chats, memory, expenses, sensors
+npm test          # 52 tests: authority, payments, idempotency, recovery, restart, chats, memory, expenses, sensors
 npm run demo      # CLI walkthrough of every scenario (short undo window)
 npm start         # API + demo UI on http://localhost:8787 (30s undo window)
 npm run models:check   # ping Nemotron (needs ONLINE_MODEL_API_KEY) and local Qwen/Ollama
@@ -127,6 +133,64 @@ ollama pull qwen3:4b && ollama serve       # on the phone/laptop, for the offlin
 npm run models:check
 ```
 
+## L4 autopilot and critical thinking
+
+**Autopilot (on by default per trip; toggle it in the Trip panel).** Every 60 seconds (`AUTOPILOT_TICK_MS`) Biruni reviews each active trip *without being asked*:
+
+| Signal | What it decides | Why |
+|---|---|---|
+| Operator says CANCELLED (trusted feed) | **ACT**: autonomous recovery, then booking within ₹2,000 with a 30 s undo, or it stops and asks | the L4 contract |
+| Same, but from an unconfirmed source | **WAIT** until a second independent report | don't spend money on a rumour |
+| Delay under 180 min | **NOTIFY** and keep watching | least-invasive action |
+| Delay of 180 min or more | **ACT** (recovery) | likely to miss the trip |
+| Signal for a leg that left over 3 h ago | **IGNORE** | stale |
+| GPS, OSRM travel time and a 30 min buffer exceed the time left | **NOTIFY**: "Leave now" | |
+| Departure within 3 h | **NOTIFY**: reminder | |
+| Recovery finished | **ASK** for a vendor rating | ratings feed the vendor ladder |
+
+Every decision is logged with what it considered and why, and shown in the Trip panel. All money still goes through recovery and the MCP guards.
+
+The operator feed is **simulated**: Connections → "Autopilot demo" pushes cancel and delay events. A real operator, IRCTC or bus-aggregator status API would plug into `Autopilot.operatorEvent`.
+
+**Critical thinking in chats:**
+- The system prompt makes the model:
+  - clarify only when a wrong guess would cost money, time or safety
+  - check facts with tools and flag contradictions
+  - weigh at least two options on cost, time, safety and obligations
+  - plan multi-step tasks (`make_plan` / `update_plan`, up to 12 steps)
+  - verify outcomes and report uncertainty
+- **Self-check:** before a reply that involves money, bookings, numbers or directions goes out, a second model call compares the draft against the tool results. It fixes invented or contradicted details, marking the reply "self-checked" or "self-corrected". `CRITIC=off` disables it, which saves free-tier quota.
+- **Consent guard:** booking and approval tools only work if the traveller's own latest message is an explicit yes with no hedging. "book it? not yet", "yes but wait" and "abhi nahi" are all refused.
+
+## Feedback
+
+- 👍/👎 on every reply; 👎 asks what was wrong.
+- After a recovery, rate the vendor 1–5★. **Vendor ratings update that vendor's score**, so a badly rated operator falls below the ladder's 3.5★ bar and stops being used.
+- In any chat, saying "the bus was awful, 2/5" is recorded through `record_feedback`.
+- "💬 Send feedback" in the sidebar takes product feedback.
+- Connections shows a summary; export everything from `/api/feedback.csv`.
+
+## Typo-tolerant matching
+
+Matching works like a search engine:
+- case-insensitive and accent-insensitive
+- tolerates typos (Damerau-Levenshtein, transpositions count as 1)
+- matches as you type (prefixes) and in any word order
+- very short words must match exactly, to avoid false hits
+
+It's used for:
+- **slash commands:** `/Recal`, `/FORGT`, `/ BTW`
+- **memory:** recall, dedup ("Rahul" = "rahul" = "Raahul"), and `/forget`, which needs a strong match
+- **people's names in expenses**
+- **disruption and safety keywords:** "ACIDENT", "cancled", "delayd"
+- **language names:** "tamill" → ta-IN
+- **chat search** over titles and messages
+- **place search:** Photon, a typo-tolerant OpenStreetMap geocoder ("fort agauda" → Fort Aguada), then Nominatim
+
+## Delhivery parcels and luggage
+
+The 📦 chat walks through: quote (surface or express, price and ETA), then details, then booking **only after an explicit yes**, then an AWB, tracking stages, and cancelling before pickup. Without `DELHIVERY_API_KEY` and `DELHIVERY_PICKUP_LOCATION`, every booking is **simulated** and says so. With them, Biruni also files a real pickup request to Delhivery's documented `/fm/request/new/` endpoint; the auth header format is assumed, so verify it in Delhivery One. Creating a real waybill isn't implemented, because its request format isn't public. The tariff is simulated, not Delhivery's rate card.
+
 ## Conversational layer
 
 | Chat | What it does | Notable tools |
@@ -138,6 +202,9 @@ npm run models:check
 | Discover | lesser-known places from Reddit and YouTube | `discover_places` |
 | Maps | live location, nearby ATMs, hospitals and police (and **vegetarian** places, using OSM's `diet:vegetarian` tag), turn-by-turn directions drawn on a MapLibre map | `where_am_i`, `nearby_places`, `directions` |
 | Custom | your own instructions plus the tool groups you tick | chosen per chat |
+| 📦 Send parcel | Delhivery quote, book, track, cancel | `delivery_quote`, `delivery_book`, `delivery_track` |
+
+Every chat has an **emoji and a name**: ✎ in the top bar or a double-click on the title opens the editor. The ◐/☀/☾ button switches between system, light and dark themes.
 | Calendar | read and add Google Calendar events | `calendar_list_events`, `calendar_add_event` |
 | Budget | authority left, free balance after protected obligations | `get_budget` |
 
@@ -169,7 +236,7 @@ Guardrails that stay deterministic even with an LLM in the loop:
 | Pine Labs | pinelabs.com Plural API docs | a charge becomes a **payment link the traveller must complete**; status by merchant reference; refunds | **No** |
 | Setu AA | docs.setu.co FIU APIs | consent, then data session, then 6 months of debits | **No**; token acquisition isn't covered in the docs I read, so set `SETU_ACCESS_TOKEN` |
 | Zerodha | kite.trade Kite Connect v3 docs | daily login flow, read-only holdings | **No** |
-| Delhivery | — | **Decorative for now:** shows active and accepts calls but returns empty results, even with a key. Maps use OpenStreetMap and transport alternatives are simulated | n/a |
+| Delhivery | delhivery-express-api-doc (pickup request) | parcel/luggage booking: simulated end to end without a key; with a key it also files a real pickup request (auth format assumed). Maps use OpenStreetMap, not Delhivery | **No** |
 | Google Calendar | Google OAuth and Calendar v3 | OAuth read and write, or ICS read-only | **No** |
 | Reddit / YouTube / Splitwise | public API docs | search, search, sync | **No** (Reddit anonymous is blocked from cloud IPs) |
 | Gemini (stand-in LLM) | Google OpenAI-compatible endpoint | tool calling | **Yes** |

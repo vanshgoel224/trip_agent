@@ -4,6 +4,7 @@
 // graph.html tooling can read it. Shared by every chat.
 import type { Store } from "../../packages/db";
 import { nowIso } from "../../packages/shared";
+import { normalize, score, wordMatch } from "../../packages/shared/fuzzy";
 import { bus } from "../../packages/events";
 
 export type NodeType = "traveller" | "person" | "place" | "trip" | "preference" | "expense" | "activity" | "fact" | "chat" | "language" | "thing";
@@ -57,7 +58,10 @@ export class MemoryGraph {
   constructor(private store: Store) {}
 
   upsertNode(type: NodeType, label: string, source: string, attrs?: Record<string, unknown>): MemNode {
-    const id = nodeId(type, label);
+    label = label.trim();
+    // Same type + near-identical label (case, spacing, one typo) → same node.
+    const twin = type !== "chat" ? this.nodes().find((n) => n.type === type && score(label, n.label) >= 0.93) : undefined;
+    const id = twin?.id ?? nodeId(type, label);
     const prev = this.store.get<MemNode>("memory_nodes", id);
     const [community, community_name] = COMMUNITIES[type] ?? COMMUNITIES.thing;
     const node: MemNode = prev
@@ -112,7 +116,8 @@ export class MemoryGraph {
 
   /** /forget: delete nodes matching the query and every link touching them. */
   forget(q: string): string[] {
-    const hits = this.search(q, 10).filter((h) => h.type !== "traveller" && h.type !== "chat");
+    // Deleting is destructive: require a strong match (typos OK, loose matches not).
+    const hits = this.search(q, 10).filter((h) => h.match >= 0.8 && h.type !== "traveller" && h.type !== "chat");
     for (const h of hits) {
       for (const l of this.links().filter((l) => l.source === h.id || l.target === h.id)) this.store.delete("memory_links", l.id);
       this.store.delete("memory_nodes", h.id);
@@ -125,24 +130,24 @@ export class MemoryGraph {
     return this.load().links;
   }
 
-  /** Quick recall: nodes whose label contains any query word, with their direct facts. No model call. */
+  /** Quick recall: typo- and case-tolerant match on node labels, with their direct facts. No model call. */
   search(q: string, limit = 20) {
-    const words = q.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 2);
-    if (!words.length) return [];
+    if (normalize(q).length < 2) return [];
     const { nodes, links } = this.load();
     const byId = new Map(nodes.map((n) => [n.id, n]));
-    const score = (n: MemNode) => words.filter((w) => n.norm_label.includes(w)).length;
     return nodes
-      .map((n) => ({ n, s: score(n) }))
-      .filter((x) => x.s > 0)
+      .filter((n) => n.type !== "chat")
+      .map((n) => ({ n, s: score(q, n.label) }))
+      .filter((x) => x.s >= 0.55)
       .sort((a, b) => b.s - a.s || b.n.mentions - a.n.mentions)
       .slice(0, limit)
-      .map(({ n }) => ({
+      .map(({ n, s }) => ({
         id: n.id,
         label: n.label,
         type: n.type,
         community: n.community_name,
         mentions: n.mentions,
+        match: Math.round(s * 100) / 100,
         facts: links
           .filter((l) => l.source === n.id || l.target === n.id)
           .sort((a, b) => b.weight - a.weight)
@@ -151,12 +156,17 @@ export class MemoryGraph {
       }));
   }
 
+
   /** Facts relevant to a message: nodes whose label appears in it, their neighbours, plus the traveller's preferences. */
   recall(text: string, limit = 25): string[] {
-    const t = ` ${text.toLowerCase()} `;
+    const words = normalize(text).split(" ").filter((w) => w.length >= 3);
     const nodes = this.nodes();
     const byId = new Map(nodes.map((n) => [n.id, n]));
-    const hit = new Set(nodes.filter((n) => n.norm_label.length >= 3 && t.includes(n.norm_label)).map((n) => n.id));
+    const mentioned = (n: MemNode) => {
+      const lw = normalize(n.label).split(" ").filter((w) => w.length >= 3);
+      return lw.length > 0 && lw.every((l) => words.some((w) => wordMatch(w, l)));
+    };
+    const hit = new Set(nodes.filter((n) => n.type !== "chat" && mentioned(n)).map((n) => n.id));
     for (const n of nodes) if (n.type === "traveller" || n.type === "preference" || n.type === "language") hit.add(n.id);
     const facts = this.links()
       .filter((l) => hit.has(l.source) || hit.has(l.target))

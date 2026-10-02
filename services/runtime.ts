@@ -21,6 +21,9 @@ import { MemoryGraph } from "./memory";
 import { Devices } from "./devices";
 import { McpConnections } from "./mcp-client";
 import { Conversation } from "./conversation";
+import { Delhivery } from "./integrations/delhivery";
+import { Autopilot } from "./autopilot";
+import { Feedback } from "./feedback";
 
 export type Biruni = ReturnType<typeof createBiruni>;
 
@@ -58,13 +61,17 @@ export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; pro
     ask: (tripId, text) => voice.say(tripId, text, { kind: "CHECKIN" }),
   });
   const mcpClients = new McpConnections(store);
-  const chatAgent = new ChatAgent({ store, orchestrator, travel, booking, finance, expenses, memory, voice, chats, mcpClients, devices });
+  const delhivery = new Delhivery(store);
+  const feedback = new Feedback(store);
+  const chatAgent = new ChatAgent({ store, orchestrator, travel, booking, finance, expenses, memory, voice, chats, mcpClients, devices, delhivery, feedback });
+  const autopilot = new Autopilot({ store, orchestrator, voice, devices });
   const conversation = new Conversation({ store, orchestrator, chats, chatAgent, memory, voice, models });
 
   return {
     store, providers, mcp, finance, compliance, voice, travel, booking, recovery, undo, models, orchestrator, rehydrated,
-    memory, expenses, chats, devices, mcpClients, chatAgent, conversation,
+    memory, expenses, chats, devices, mcpClients, chatAgent, conversation, delhivery, autopilot, feedback,
     shutdown() {
+      autopilot.stop();
       undo.stopAll();
       devices.stopAll();
       store.close();

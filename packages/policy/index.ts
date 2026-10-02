@@ -11,6 +11,7 @@ import type {
   StopReason,
 } from "../domain";
 import { id, inr, nowIso } from "../shared";
+import { containsFuzzy } from "../shared/fuzzy";
 
 // ---------- Disruption classification (spec §4.3) ----------
 
@@ -28,9 +29,10 @@ const ROUTE_WORDS = [
  * class to SAFETY but can never downgrade a SAFETY match.
  */
 export function classifyDisruption(text: string, modelProposal?: DisruptionClass): DisruptionClass {
+  // Case-insensitive, typo-tolerant ("acident", "UNSAFE", "harrased"). Safety errs towards escalating.
   const t = text.toLowerCase();
-  if (SAFETY_WORDS.some((w) => t.includes(w)) || modelProposal === "SAFETY") return "SAFETY";
-  if (ROUTE_WORDS.some((w) => t.includes(w))) return "ROUTE_BLOCKED";
+  if (SAFETY_WORDS.some((w) => t.includes(w)) || containsFuzzy(text, SAFETY_WORDS.filter((w) => w.length >= 5)) || modelProposal === "SAFETY") return "SAFETY";
+  if (ROUTE_WORDS.some((w) => t.includes(w)) || containsFuzzy(text, ROUTE_WORDS.filter((w) => w.length >= 5))) return "ROUTE_BLOCKED";
   return modelProposal ?? "LOGISTICAL";
 }
 

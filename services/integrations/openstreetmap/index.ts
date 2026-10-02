@@ -6,6 +6,8 @@ const UA = process.env.OSM_USER_AGENT || "biruni-prototype/0.1 (KEN Round 3 demo
 const NOMINATIM = process.env.NOMINATIM_URL || "https://nominatim.openstreetmap.org";
 const OVERPASS = process.env.OVERPASS_URL || "https://overpass-api.de/api/interpreter";
 const OSRM = process.env.OSRM_URL || "https://router.project-osrm.org";
+// Photon (komoot) is an OSM geocoder that tolerates typos ("fort agauda" → Fort Aguada).
+const PHOTON = process.env.PHOTON_URL || "https://photon.komoot.io";
 
 export type LatLng = { lat: number; lng: number };
 export type Place = { name: string; lat: number; lng: number; kind?: string; address?: string; distanceM?: number; osm?: string };
@@ -32,7 +34,32 @@ export async function reverseGeocode(p: LatLng): Promise<{ name: string; address
   return { name: j.display_name ?? `${p.lat},${p.lng}`, address: j.address ?? {} };
 }
 
+async function photon(q: string, near?: LatLng): Promise<Place[]> {
+  const bias = near ? `&lat=${near.lat}&lon=${near.lng}` : "&lat=20.6&lon=78.9";
+  const res = await fetch(`${PHOTON}/api/?q=${encodeURIComponent(q)}&limit=5${bias}`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(10_000) });
+  if (!res.ok) throw new Error(`Photon HTTP ${res.status}`);
+  const j = (await res.json()) as { features: { geometry: { coordinates: [number, number] }; properties: any }[] };
+  return j.features
+    .filter((f) => !f.properties.countrycode || f.properties.countrycode === "IN")
+    .map((f) => {
+      const p = f.properties;
+      const place: Place = { name: p.name ?? p.street ?? q, lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], kind: `${p.osm_key}/${p.osm_value}`, address: [p.name, p.street, p.city ?? p.county, p.state].filter(Boolean).join(", "), osm: `${p.osm_type}/${p.osm_id}` };
+      return near ? { ...place, distanceM: distanceM(near, place) } : place;
+    });
+}
+
+/** Typo-tolerant place search: Photon first, Nominatim as fallback. */
 export async function findPlace(q: string, near?: LatLng): Promise<Place[]> {
+  try {
+    const r = await photon(q, near);
+    if (r.length) return r;
+  } catch {
+    /* fall through */
+  }
+  return nominatimSearch(q, near);
+}
+
+async function nominatimSearch(q: string, near?: LatLng): Promise<Place[]> {
   const bias = near ? `&viewbox=${near.lng - 0.5},${near.lat + 0.5},${near.lng + 0.5},${near.lat - 0.5}` : "";
   const j = (await nominatim(`/search?q=${encodeURIComponent(q)}&format=jsonv2&limit=5&countrycodes=in${bias}`)) as any[];
   return j.map((x) => {

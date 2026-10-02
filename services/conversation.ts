@@ -7,7 +7,8 @@ import type { ChatAgent } from "./orchestrator/chat-agent";
 import type { Chats, ChatMode, CustomSpec } from "./orchestrator/chats";
 import type { MemoryGraph } from "./memory";
 import type { VoiceAgent } from "./agents/voice";
-import { chat as modelChat, geminiStrongModel, resolveEndpoint, type ModelRouter } from "./models";
+import { chat as modelChat, GENERIC_SYSTEM, geminiStrongModel, resolveEndpoint, type ModelRouter } from "./models";
+import { bestMatch, containsFuzzy, editDistance, normalize, rank } from "../packages/shared/fuzzy";
 
 // Languages for translation. Gnani (voice) covers the first ten; the rest use
 // text translation plus the browser's speech engines where the device has them.
@@ -26,6 +27,26 @@ export const LANGUAGES: { code: string; name: string; gnani: boolean }[] = [
   { code: "brx-IN", name: "Bodo", gnani: false },
 ];
 const langName = (code: string) => LANGUAGES.find((l) => l.code === code)?.name ?? code;
+
+/** "Tamil", "tamill", "ta", "ta-IN", "तमिल"-ish names → BCP-47 code. */
+export function resolveLanguage(input: string | undefined): string | undefined {
+  if (!input) return undefined;
+  const exact = LANGUAGES.find((l) => l.code.toLowerCase() === input.toLowerCase() || l.code.split("-")[0] === input.toLowerCase());
+  return exact?.code ?? bestMatch(input, LANGUAGES, (l) => [l.name, l.code], 0.7)?.item.code;
+}
+
+// Slash commands, case-insensitive and typo-tolerant ("/Recal", "/forgt", "/BTW").
+const COMMANDS: Record<string, "recall" | "forget" | "btw"> = { recall: "recall", memory: "recall", yaad: "recall", remember: "recall", forget: "forget", bhool: "forget", delete: "forget", btw: "btw", aside: "btw" };
+export function parseCommand(text: string): { cmd: "recall" | "forget" | "btw"; arg: string } | undefined {
+  const m = text.match(/^\s*\/\s*([\p{L}]+)\s*([\s\S]*)$/u);
+  if (!m) return undefined;
+  const word = normalize(m[1]);
+  const arg = m[2].trim();
+  if (!arg) return undefined;
+  if (COMMANDS[word]) return { cmd: COMMANDS[word], arg };
+  for (const [k, v] of Object.entries(COMMANDS)) if (k.length >= 4 && editDistance(word, k, 1) <= 1) return { cmd: v, arg };
+  return undefined;
+}
 
 // Unicode blocks per language, to catch a model answering in the wrong script.
 const SCRIPTS: Record<string, RegExp> = {
@@ -53,6 +74,7 @@ const TOOL_HOME: Record<string, ChatMode> = {
   discover_places: "discover",
   calendar_list_events: "calendar", calendar_add_event: "calendar", add_activity: "calendar", update_activity: "calendar", remove_activity: "calendar",
   get_budget: "budget",
+  delivery_quote: "delivery", delivery_book: "delivery", delivery_track: "delivery", delivery_cancel: "delivery", delivery_list: "delivery",
 };
 const TRANSLATE_RE = /\b(translate|translation|anuvad|in (hindi|tamil|telugu|kannada|malayalam|marathi|gujarati|punjabi|bengali|odia|urdu|assamese|konkani|english))\b|\b(kaise bolte|ko .* mein kya kehte)\b/i;
 
@@ -63,15 +85,30 @@ export function routeTargets(text: string, tools: string[]): ChatMode[] {
     const m = TOOL_HOME[t.replace(/\(.*$/, "")];
     if (m) modes.add(m);
   }
-  if (TRANSLATE_RE.test(text)) modes.add("translate");
+  if (TRANSLATE_RE.test(text) || containsFuzzy(text, ["translate", "translation", "anuvad"])) modes.add("translate");
   return [...modes];
 }
 
 export class Conversation {
   constructor(private d: Deps) {}
 
-  newChat(mode: ChatMode, tripId?: string, title?: string, custom?: CustomSpec) {
-    const c = this.d.chats.create(mode, tripId, title, custom);
+  /** Google-style chat search over titles and message text: case-, accent- and typo-tolerant. */
+  searchChats(q: string) {
+    if (normalize(q).length < 2) return [];
+    const docs = this.d.chats.list().map((c) => {
+      const msgs = this.d.chats.messages(c.chatId);
+      return { c, msgs };
+    });
+    return rank(q, docs, ({ c, msgs }) => [c.title, ...msgs.slice(-40).map((m) => m.text.slice(0, 300))], 0.6)
+      .slice(0, 20)
+      .map(({ item, score }) => {
+        const snippet = item.msgs.map((m) => m.text).find((t) => bestMatch(q, [t], (x) => x, 0.6)) ?? "";
+        return { chatId: item.c.chatId, title: item.c.title, mode: item.c.mode, emoji: item.c.emoji, score: Math.round(score * 100) / 100, snippet: snippet.slice(0, 140) };
+      });
+  }
+
+  newChat(mode: ChatMode, tripId?: string, title?: string, custom?: CustomSpec, emoji?: string) {
+    const c = this.d.chats.create(mode, tripId, title, custom, emoji);
     this.d.memory.upsertNode("chat", `${c.title} (${c.chatId})`, c.chatId, { mode });
     return c;
   }
@@ -82,9 +119,9 @@ export class Conversation {
     const clean = text.trim().slice(0, 4000);
     if (!clean) throw new Error("empty message");
     // /btw: side question, answered but never stored (no history, no memory, no auto-filing, read-only tools).
-    const btw = clean.match(/^\/btw\s+([\s\S]+)/i);
-    if (btw) {
-      const q = btw[1].trim();
+    const command = parseCommand(clean);
+    if (command?.cmd === "btw") {
+      const q = command.arg;
       const out = (await this.d.chatAgent.respond(chat, q, undefined, { ephemeral: true })) ?? { reply: "My language model isn't connected, so I can't answer side questions right now.", source: "RULES", tools: [] };
       const message = { messageId: "EPHEMERAL", chatId, role: "assistant" as const, text: out.reply, at: new Date().toISOString(), source: `btw · not saved · ${out.source}`, tools: out.tools };
       return { chat, message, tools: out.tools, source: out.source, copiedTo: [], ephemeral: true };
@@ -92,20 +129,18 @@ export class Conversation {
 
     this.d.chats.add(chatId, { role: "user", text: clean });
 
-    const forget = clean.match(/^\/forget\s+(.+)/i);
-    if (forget) {
-      const gone = this.d.memory.forget(forget[1]);
-      const msg = this.d.chats.add(chatId, { role: "assistant", text: gone.length ? `Forgotten: ${gone.join(", ")}.` : `Nothing in memory matched "${forget[1]}".`, source: "MEMORY" });
+    if (command?.cmd === "forget") {
+      const gone = this.d.memory.forget(command.arg);
+      const msg = this.d.chats.add(chatId, { role: "assistant", text: gone.length ? `Forgotten: ${gone.join(", ")}.` : `Nothing in memory matched "${command.arg}".`, source: "MEMORY" });
       return { chat: this.d.chats.get(chatId), message: msg, tools: ["forget"], source: "MEMORY", copiedTo: [] };
     }
 
     // Quick recall: answered straight from the memory graph, no model call.
-    const recall = clean.match(/^\/(recall|memory|yaad)\s+(.+)/i);
-    if (recall) {
-      const hits = this.d.memory.search(recall[2]);
+    if (command?.cmd === "recall") {
+      const hits = this.d.memory.search(command.arg);
       const reply = hits.length
         ? hits.slice(0, 6).map((h) => `• ${h.label} (${h.type})${h.facts.length ? ": " + h.facts.slice(0, 5).join("; ") : ""}`).join("\n")
-        : `Nothing in memory about "${recall[2]}" yet.`;
+        : `Nothing in memory about "${command.arg}" yet.`;
       const msg = this.d.chats.add(chatId, { role: "assistant", text: reply, source: "MEMORY" });
       return { chat: this.d.chats.get(chatId), message: msg, tools: ["quick_recall"], source: "MEMORY", copiedTo: [] };
     }
@@ -144,7 +179,7 @@ export class Conversation {
     if (!ep) throw new Error("Translation needs a language model: set GEMINI_API_KEY or ONLINE_MODEL_API_KEY");
     const prompt = `Translate from ${from === "auto" ? "the detected language" : langName(from)} to ${langName(to)}. Write the translation ONLY in ${langName(to)}'s own script. Return ONLY JSON: {"translation": "<in ${langName(to)} script>", "pronunciation": "<Latin-script reading>"}.\nText: ${text}`;
     const run = async (model: string) => {
-      const raw = await modelChat({ ...ep, model }, prompt, 20_000);
+      const raw = await modelChat({ ...ep, model }, prompt, 20_000, GENERIC_SYSTEM);
       const body = raw.replace(/<think>[\s\S]*?<\/think>/gi, "");
       const j = JSON.parse(body.slice(body.indexOf("{"), body.lastIndexOf("}") + 1));
       return { translation: String(j.translation ?? "").trim(), pronunciation: j.pronunciation as string | undefined, source: model };

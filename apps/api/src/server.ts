@@ -6,7 +6,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBiruni } from "../../../services/runtime";
 import { SCENARIOS, createCustomTrip, seedScenario, type ScenarioName } from "../../../services/integrations/scenarios";
-import { CHAT_MODES, TOOL_GROUPS, type ChatMode } from "../../../services/orchestrator/chats";
+import { CHAT_MODES, DEFAULT_EMOJI, TOOL_GROUPS, type ChatMode } from "../../../services/orchestrator/chats";
 import { LANGUAGES } from "../../../services/conversation";
 import { audioCache } from "../../../services/agents/voice";
 import { GoogleCalendar } from "../../../services/integrations/google-calendar";
@@ -88,13 +88,14 @@ route("POST", "/api/trips/quick", async (_r, body) => {
 });
 
 // ---------- chats ----------
-route("GET", "/api/chat-modes", () => Object.entries(CHAT_MODES).map(([mode, m]) => ({ mode, label: m.label, icon: m.icon })));
+route("GET", "/api/chat-modes", () => Object.entries(CHAT_MODES).map(([mode, m]) => ({ mode, label: m.label, icon: DEFAULT_EMOJI[mode as ChatMode] ?? m.icon })));
 route("GET", "/api/chats", () => b.chats.list());
+route("GET", "/api/chats/search", (_r, _b, _p, url) => b.conversation.searchChats(url.searchParams.get("q") ?? ""));
 route("GET", "/api/tool-groups", () => Object.entries(TOOL_GROUPS).map(([id, g]) => ({ id, label: g.label })));
-route("POST", "/api/chats/:chatId/rename", (_r, body, p) => b.chats.update(p.chatId, { title: String(body.title ?? "") }));
+route("POST", "/api/chats/:chatId/rename", (_r, body, p) => b.chats.update(p.chatId, { title: body.title !== undefined ? String(body.title) : undefined, emoji: body.emoji }));
 route("POST", "/api/chats", (_r, body) => {
   if (!(body.mode in CHAT_MODES)) throw new BiruniError("INVALID_REQUEST", "unknown chat mode");
-  return b.conversation.newChat(body.mode as ChatMode, body.tripId || undefined, body.title, body.custom);
+  return b.conversation.newChat(body.mode as ChatMode, body.tripId || undefined, body.title, body.custom, body.emoji);
 });
 route("GET", "/api/chats/:chatId", (_r, _b, p) => {
   const chat = b.chats.get(p.chatId);
@@ -147,7 +148,7 @@ route("GET", "/api/connections", () => {
       offline: offlineEndpoint() ? { provider: "Qwen (Ollama)", model: offlineEndpoint()!.model } : null,
       lastError: b.models.describe().lastError,
     },
-    rails: providerStatus(b.providers),
+    rails: { ...providerStatus(b.providers), delhivery: b.delhivery.status() },
     calendar: calendar.status(),
     reddit: { configured: redditConfigured(), note: redditConfigured() ? "OAuth app" : "anonymous (often blocked from cloud IPs)" },
     youtube: { configured: youtubeConfigured() },
@@ -184,6 +185,25 @@ route("POST", "/api/aa/consent", async (_r, body) => {
   if (!(b.providers.financial instanceof SetuProvider)) throw new BiruniError("AUTH_FAILURE", "Setu AA is simulated: set SETU_ACCESS_TOKEN and SETU_PRODUCT_INSTANCE_ID");
   return b.providers.financial.createConsent(String(body.vua ?? ""));
 });
+route("GET", "/api/delhivery/bookings", (_r, _b, _p, url) => b.delhivery.list(url.searchParams.get("tripId") || undefined).map((p) => b.delhivery.track(p.bookingId)));
+// ---------- L4 autopilot ----------
+route("GET", "/api/autopilot/:tripId", (_r, _b, p) => ({ enabled: b.autopilot.enabled(p.tripId), decisions: b.autopilot.decisions(p.tripId) }));
+route("POST", "/api/autopilot/:tripId", (_r, body, p) => (b.autopilot.setEnabled(p.tripId, !!body.enabled), { enabled: b.autopilot.enabled(p.tripId) }));
+route("POST", "/api/autopilot/:tripId/tick", (_r, _b, p) => b.autopilot.tick(p.tripId));
+// Demo hook: what a real operator status feed would push.
+route("POST", "/api/sim/operator", async (_r, body) => {
+  const trip = b.orchestrator.trip(String(body.tripId));
+  const leg = trip.itinerary.legs.find((l) => l.legId === body.legId) ?? trip.itinerary.legs.find((l) => l.status === "CONFIRMED" || l.status === "PLANNED");
+  if (!leg) throw new BiruniError("INVALID_REQUEST", "no active leg");
+  const ev = b.autopilot.operatorEvent(trip.tripId, { legId: leg.legId, status: body.status ?? "CANCELLED", delayMin: body.delayMin, source: body.source });
+  const decisions = await b.autopilot.tick(trip.tripId);
+  return { event: ev, decisions };
+});
+
+// ---------- feedback ----------
+route("POST", "/api/feedback", (_r, body) => b.feedback.record({ ...body, rating: body.rating === undefined || body.rating === null || body.rating === "" ? undefined : Number(body.rating), source: "ui" }));
+route("GET", "/api/feedback", (_r, _b, _p, url) => ({ summary: b.feedback.summary(), items: b.feedback.list({ tripId: url.searchParams.get("tripId") || undefined }).slice(0, 100) }));
+
 route("GET", "/api/mcp/servers", () => b.mcpClients.list());
 route("POST", "/api/mcp/servers", (_r, body) => b.mcpClients.add({ name: String(body.name ?? ""), url: String(body.url ?? ""), transport: body.transport, headers: body.headers }));
 route("POST", "/api/mcp/servers/:id/reconnect", async (_r, _b, p) => (await b.mcpClients.connect(p.id), b.mcpClients.list()));
@@ -228,6 +248,10 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   try {
     if (url.pathname === "/api/events") return sse(req, res, url);
+    if (url.pathname === "/api/feedback.csv") {
+      res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="biruni-feedback.csv"' });
+      return res.end(b.feedback.csv());
+    }
     const audio = url.pathname.match(/^\/api\/voice\/audio\/([A-Z0-9-]+)$/);
     if (audio) {
       const a = audioCache.get(audio[1]);
@@ -264,6 +288,7 @@ const server = createServer(async (req, res) => {
 });
 
 void b.mcpClients.connectAll();
+b.autopilot.start(); // L4: watches every active trip every AUTOPILOT_TICK_MS (default 60s)
 
 server.listen(config.port, () => {
   console.log(`Biruni API on http://localhost:${config.port}  (providers: ${config.providerMode}, undo window: ${config.undoWindowMs / 1000}s, db: ${config.dbPath})`);
