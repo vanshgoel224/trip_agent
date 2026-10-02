@@ -6,6 +6,8 @@ name: Android APK
 on:
   workflow_dispatch:
   push:
+    # Both filters are needed: with only "tags", GitHub would skip branch pushes.
+    branches: ["**"]
     tags: ["v*"]
     paths:
       - "apps/mobile/**"
