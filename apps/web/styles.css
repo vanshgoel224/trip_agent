@@ -271,3 +271,13 @@ dialog:has(.wide) { width: min(860px, calc(100vw - 24px)); }
 .form-row label { display: flex !important; gap: 6px; align-items: center; }
 .mcp-row { flex-wrap: wrap; }
 .mcp-row > span:first-child { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+/* lock screen: always reachable on short screens */
+.lock { overflow-y: auto; place-items: start center; }
+.lock-box { margin: auto 0; padding: 8px 0 24px; }
+.lock-box .hero-logo { justify-self: center; }
+.lock-box input { font-size: 17px; letter-spacing: normal; padding: 10px 14px; }
+.lock-box input[type=password] { font-size: 20px; letter-spacing: 0.3em; }
+.pinpad button { padding: 10px 0; font-size: 18px; }
+@media (pointer: fine) and (min-width: 700px) { .pinpad { display: none; } }
+.hero-emoji { font-size: 44px; }
+.hero img.hero-logo { margin: 0 auto; display: block; }

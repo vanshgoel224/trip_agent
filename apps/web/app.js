@@ -187,7 +187,7 @@ function heroFor(mode) {
   const d = document.createElement("div");
   d.className = "hero";
   const title = mode === "custom" ? S.chats.find((c) => c.chatId === S.chatId)?.title ?? "Custom chat" : modeInfo(mode).label;
-  d.innerHTML = `<div class="hero-logo">${modeInfo(mode).icon}</div><h1>${esc(title)}</h1>${mode === "custom" ? `<p class="muted">${esc(S.chats.find((c) => c.chatId === S.chatId)?.custom?.instructions ?? "")}</p>` : ""}<div class="chips">${ideas.map((i) => `<button class="chip" data-say="${esc(i)}">${esc(i)}</button>`).join("")}</div>`;
+  d.innerHTML = `<div class="hero-emoji">${modeInfo(mode).icon}</div><h1>${esc(title)}</h1>${mode === "custom" ? `<p class="muted">${esc(S.chats.find((c) => c.chatId === S.chatId)?.custom?.instructions ?? "")}</p>` : ""}<div class="chips">${ideas.map((i) => `<button class="chip" data-say="${esc(i)}">${esc(i)}</button>`).join("")}</div>`;
   return d;
 }
 
@@ -198,7 +198,7 @@ function renderEmpty() {
   box.innerHTML = "";
   const hero = document.createElement("div");
   hero.className = "hero";
-  hero.innerHTML = `<div class="hero-logo">◐</div><h1>Where to?</h1><p class="muted">Plans, disruptions, translation, splitting bills, maps — one place.</p><div class="chips">${S.modes.filter((m) => m.mode !== "custom").map((m) => `<button class="chip" data-mode="${m.mode}">${m.icon} ${esc(m.label)}</button>`).join("")}<button class="chip" data-custom="1">✎ Custom chat…</button></div>`;
+  hero.innerHTML = `<img class="hero-logo" src="icons/icon-192.png" alt="" width="64" height="64" /><h1>Namaste! Where to?</h1><p class="muted">Tell me in your own words — English, Hindi, Hinglish, Tamil… I can plan, rebook when things go wrong, translate, split bills, find your way and get help.</p><div class="chips">${S.modes.filter((m) => m.mode !== "custom").map((m) => `<button class="chip" data-mode="${m.mode}">${m.icon} ${esc(m.label)}</button>`).join("")}<button class="chip" data-custom="1">✎ Custom chat…</button></div>`;
   box.append(hero);
 }
 
