@@ -47,3 +47,6 @@ Thumbs.db
 
 # ---- Exported memory (plaintext copy of the encrypted graph) ----
 memory-out/
+
+# ---- Multi-user data (encrypted per user) ----
+data/

@@ -1,4 +1,11 @@
 // Biruni UI. Talks only to the Biruni API — never to MCP servers or vendor rails directly.
+// Each feature with its own UI lives in ./modules/* and is started independently, so one
+// failing feature (say, the battery API on an old browser) never takes the app down.
+import { secureLocal } from "./modules/securelocal.js";
+import { initLegal } from "./modules/legal.js";
+import { initSos } from "./modules/sos.js";
+import { initPeople } from "./modules/people.js";
+import { initBattery, power } from "./modules/battery.js";
 const $ = (id) => document.getElementById(id);
 const inr = (n) => "₹" + Number(n).toLocaleString("en-IN");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -18,39 +25,66 @@ async function api(method, path, body) {
   return j;
 }
 
-// ---------------- PIN lock ----------------
-let lockMode = "unlock";
+// ---------------- sign in (multi-user) ----------------
+let lockMode = "signin"; // signin | signup | legacy
+const LOCK_TEXT = {
+  signin: ["Sign in to your space", "Sign in", "New here? Create an account"],
+  signup: ["Create your account: pick a username and a PIN (4–12 digits) or a password (6+ characters)", "Create account", "Have an account? Sign in"],
+  legacy: ["Your existing data was found. Choose a username and enter your current PIN to keep it.", "Keep my data", ""],
+};
 function showLock(mode) {
   S.es?.close();
+  secureLocal.lock();
   lockMode = mode ?? lockMode;
+  const [msg, go, sw] = LOCK_TEXT[lockMode];
   $("lockScreen").classList.remove("hidden");
-  $("pinConfirm").classList.toggle("hidden", lockMode !== "setup");
-  $("lockMsg").textContent = lockMode === "setup" ? "Create a PIN (4–12 digits) or a password (6+ characters)" : "Enter your PIN";
-  $("pinGo").textContent = lockMode === "setup" ? "Set PIN" : "Unlock";
+  $("pinConfirm").classList.toggle("hidden", lockMode !== "signup");
+  $("nameInput").classList.toggle("hidden", lockMode !== "signup");
+  $("lockMsg").textContent = msg;
+  $("pinGo").textContent = go;
+  $("lockSwitch").textContent = sw;
+  $("lockSwitch").classList.toggle("hidden", !sw);
+  $("userInput").value = store.get("lastUser", lockMode === "legacy" ? "owner" : "");
   $("pinInput").value = "";
   $("pinConfirm").value = "";
-  setTimeout(() => $("pinInput").focus(), 50);
+  checkSosWaiting();
+  setTimeout(() => ($("userInput").value ? $("pinInput") : $("userInput")).focus(), 50);
 }
+// Even while locked: "someone needs your help" (a count only; details need your PIN).
+async function checkSosWaiting() {
+  const u = $("userInput").value.trim();
+  const box = $("sosWaiting");
+  if (!u) return box.classList.add("hidden");
+  const st = await fetch(`/api/lock/status?u=${encodeURIComponent(u)}`).then((r) => r.json()).catch(() => ({}));
+  box.classList.toggle("hidden", !st.sosWaiting);
+  box.textContent = st.sosWaiting ? `🚨 ${st.sosWaiting} SOS alert${st.sosWaiting > 1 ? "s" : ""} waiting for you — sign in to see where they are.` : "";
+}
+$("userInput").addEventListener("change", checkSosWaiting);
+$("lockSwitch").onclick = () => showLock(lockMode === "signin" ? "signup" : "signin");
 $("pinpad").innerHTML = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "⌫", "0", "✓"].map((k) => `<button type="button" data-pin="${k}">${k}</button>`).join("");
 $("pinpad").onclick = (e) => {
   const k = e.target.closest("[data-pin]")?.dataset.pin;
   if (!k) return;
-  const field = lockMode === "setup" && !$("pinConfirm").classList.contains("hidden") && document.activeElement === $("pinConfirm") ? $("pinConfirm") : $("pinInput");
+  const field = lockMode === "signup" && document.activeElement === $("pinConfirm") ? $("pinConfirm") : $("pinInput");
   if (k === "⌫") field.value = field.value.slice(0, -1);
   else if (k === "✓") $("lockForm").requestSubmit();
   else field.value += k;
 };
 $("lockForm").onsubmit = async (e) => {
   e.preventDefault();
+  const username = $("userInput").value.trim().toLowerCase();
   const pin = $("pinInput").value;
   $("lockErr").textContent = "";
-  if (lockMode === "setup" && pin !== $("pinConfirm").value) return void ($("lockErr").textContent = "PINs don't match");
+  if (!username) return void ($("lockErr").textContent = "Enter your username");
+  if (lockMode === "signup" && pin !== $("pinConfirm").value) return void ($("lockErr").textContent = "PINs don't match");
   $("pinGo").disabled = true;
-  $("pinGo").textContent = lockMode === "setup" ? "Encrypting…" : "Unlocking…";
+  $("pinGo").textContent = lockMode === "signup" ? "Creating your encrypted space…" : "Unlocking…";
   try {
-    const r = await fetch(lockMode === "setup" ? "/api/lock/setup" : "/api/lock/unlock", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pin }), credentials: "same-origin" });
+    const r = await fetch(lockMode === "signup" ? "/api/lock/setup" : "/api/lock/unlock", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username, pin, displayName: $("nameInput").value.trim() || undefined }), credentials: "same-origin" });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error?.message ?? "Failed");
+    store.set("lastUser", j.username ?? username);
+    await secureLocal.unlock(j.username ?? username, pin).catch(() => {});
     $("lockScreen").classList.add("hidden");
     await startApp();
   } catch (err) {
@@ -59,12 +93,12 @@ $("lockForm").onsubmit = async (e) => {
     $("pinInput").focus();
   } finally {
     $("pinGo").disabled = false;
-    $("pinGo").textContent = lockMode === "setup" ? "Set PIN" : "Unlock";
+    $("pinGo").textContent = LOCK_TEXT[lockMode][1];
   }
 };
 $("lockBtn").onclick = async () => {
   await fetch("/api/lock/lock", { method: "POST", credentials: "same-origin" }).catch(() => {});
-  showLock("unlock");
+  showLock("signin");
 };
 $("pinChangeForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -72,7 +106,7 @@ $("pinChangeForm").onsubmit = async (e) => {
   try {
     const r = await api("POST", "/api/lock/change", f);
     e.target.reset();
-    alert(`PIN changed. ${r.reencrypted} records re-encrypted.`);
+    alert(r.note ?? "PIN changed.");
   } catch (err) {
     alert(err.message);
   }
@@ -529,7 +563,13 @@ function connectEvents() {
   S.es?.close();
   S.es = new EventSource(`/api/events${S.tripId ? `?tripId=${encodeURIComponent(S.tripId)}` : ""}`);
   S.es.onmessage = (m) => {
-    const e = JSON.parse(m.data);
+    let e;
+    try {
+      e = JSON.parse(m.data);
+    } catch {
+      return;
+    }
+    window.dispatchEvent(new CustomEvent("biruni:event", { detail: e }));
     const li = document.createElement("li");
     li.innerHTML = `<span class="t">${e.at.slice(11, 19)}</span><span class="who">${esc(e.agent)}</span>${esc(e.detail)}`;
     $("activity").prepend(li);
@@ -617,8 +657,9 @@ $("gps").onchange = (e) => {
   if (!navigator.geolocation) return alert("This browser has no GPS access");
   geoWatch = navigator.geolocation.watchPosition(
     (p) => {
-      if (Date.now() - lastSent < 10_000) return;
+      if (Date.now() - lastSent < (power.saver ? 60_000 : 10_000)) return;
       lastSent = Date.now();
+      secureLocal.saveLocation({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }).catch(() => {});
       api("POST", "/api/device/location", { tripId: S.tripId || undefined, lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy, speed: p.coords.speed, heading: p.coords.heading }).then(refreshDevice).catch(() => {});
     },
     (err) => { alert(`Location: ${err.message}. Phones only allow GPS on https:// or localhost.`); e.target.checked = false; },
@@ -1015,10 +1056,24 @@ document.addEventListener("keydown", (e) => {
 });
 
 let started = false;
+const features = {};
+function startFeatures() {
+  const deps = { $, api, esc, S, store, secureLocal };
+  for (const [name, init] of [["legal", initLegal], ["sos", initSos], ["people", initPeople], ["battery", initBattery]]) {
+    try {
+      features[name] = init(deps) ?? {};
+    } catch (e) {
+      console.warn(`feature ${name} failed to start`, e); // isolated: the rest keeps working
+    }
+  }
+  features.legal?.ensureAccepted?.();
+}
+
 async function startApp() {
   bump();
-  if (started) return void (connectEvents(), loadChats(), refreshTrip());
+  if (started) return void (connectEvents(), loadChats(), refreshTrip(), features.sos?.refresh());
   started = true;
+  startFeatures();
   await loadModes();
   await Promise.all([loadChats(), loadTrips(), loadLanguages(), api("GET", "/api/connections").then((c) => (S.connections = c)).catch(() => {})]);
   connectEvents();
@@ -1035,7 +1090,7 @@ async function startApp() {
   if (st.unlocked) {
     $("lockScreen").classList.add("hidden");
     await startApp();
-  } else showLock(st.configured ? "unlock" : "setup");
+  } else showLock(st.legacy ? "legacy" : st.accounts ? "signin" : "signup");
 })();
 
 // PWA: offline shell + installable. Failure here is harmless (e.g. plain http on a LAN IP).

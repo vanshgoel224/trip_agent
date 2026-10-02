@@ -1,0 +1,14 @@
+Biruni includes or uses the following third-party software and data:
+
+- MapLibre GL JS 4.7.1 (apps/web/vendor) — BSD-3-Clause, see apps/web/vendor/LICENSE.txt
+- Map data © OpenStreetMap contributors — ODbL 1.0; tiles from OpenFreeMap / openstreetmap.org
+- @modelcontextprotocol/sdk — MIT
+- @anthropic-ai/sdk — MIT
+- hash-wasm — MIT
+- ws — MIT
+- zod — MIT
+- Capacitor (apps/mobile) — MIT
+
+Trademarks of other companies named in the app (Gnani, Pine Labs, Delhivery, TBO,
+Agoda, EaseMyTrip, Exotel, AviationStack, Google, Anthropic, NVIDIA, DeepSeek and
+others) belong to their owners and are used only to describe integrations.

@@ -17,26 +17,30 @@ export const KDF = { N: Number(process.env.VAULT_SCRYPT_N ?? 2 ** 17), r: 8, p: 
 const PREFIX = "enc1:";
 const VERIFIER = "biruni-vault-ok";
 
-export type Cipher = { encrypt(plain: string): string; decrypt(stored: string): string };
+export type Cipher = { encrypt(plain: string, aad?: string): string; decrypt(stored: string, aad?: string): string };
+const PREFIX2 = "enc2:"; // AES-GCM with AAD = "table:id": a row can't be swapped into another row
 
 export function makeCipher(key: Buffer): Cipher {
   return {
-    encrypt(plain) {
+    encrypt(plain, aad) {
       const iv = randomBytes(12);
       const c = createCipheriv("aes-256-gcm", key, iv);
+      if (aad) c.setAAD(Buffer.from(aad));
       const ct = Buffer.concat([c.update(plain, "utf8"), c.final()]);
-      return PREFIX + Buffer.concat([iv, c.getAuthTag(), ct]).toString("base64");
+      return (aad ? PREFIX2 : PREFIX) + Buffer.concat([iv, c.getAuthTag(), ct]).toString("base64");
     },
-    decrypt(stored) {
-      if (!stored.startsWith(PREFIX)) return stored; // legacy plaintext row (migrated on unlock)
+    decrypt(stored, aad) {
+      const v2 = stored.startsWith(PREFIX2);
+      if (!v2 && !stored.startsWith(PREFIX)) return stored; // legacy plaintext row (migrated on unlock)
       const buf = Buffer.from(stored.slice(PREFIX.length), "base64");
       const d = createDecipheriv("aes-256-gcm", key, buf.subarray(0, 12));
+      if (v2) d.setAAD(Buffer.from(aad ?? ""));
       d.setAuthTag(buf.subarray(12, 28));
       return Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString("utf8");
     },
   };
 }
-export const isEncrypted = (s: string) => s.startsWith(PREFIX);
+export const isEncrypted = (s: string) => s.startsWith(PREFIX) || s.startsWith(PREFIX2);
 
 type VaultRow = { salt: string; N: number; r: number; p: number; verifier: string; createdAt: string };
 
@@ -80,6 +84,19 @@ export class Vault {
       throw new Error("A PIN is already set");
     }
     return cipher;
+  }
+
+  /** Raw key for adopting this legacy database into a multi-user account. */
+  async unlockKey(pin: string): Promise<Buffer> {
+    const v = this.row();
+    if (!v) throw new Error("No PIN set yet");
+    const key = await scrypt(String(pin ?? ""), Buffer.from(v.salt, "base64"), { N: v.N, r: v.r, p: v.p, maxmem: 256 * 1024 * 1024 });
+    try {
+      if (makeCipher(key).decrypt(v.verifier) !== VERIFIER) throw new Error("bad");
+    } catch {
+      throw new Error("Wrong PIN");
+    }
+    return key;
   }
 
   /** Returns the cipher on success. No lockout (by design); scrypt makes each guess ~0.3 s. */

@@ -22,7 +22,7 @@ after(() => {
 
 async function start() {
   proc = spawn(process.execPath, ["--no-warnings=ExperimentalWarning", "--import", "tsx", "apps/api/src/server.ts"], {
-    env: { ...process.env, PORT: String(PORT), BIRUNI_DB_PATH: join(dir, "f.db"), VAULT_SCRYPT_N: "1024", PROVIDER_MODE: "mock", OFFLINE_MODEL_CONFIG: "off", ONLINE_MODEL_API_KEY: "", GEMINI_API_KEY: "", AUTOPILOT_TICK_MS: "200", BIRUNI_INITIAL_PIN: "", BIRUNI_MCP_TOKEN: TOKEN },
+    env: { ...process.env, PORT: String(PORT), BIRUNI_DB_PATH: join(dir, "f.db"), BIRUNI_DATA_DIR: join(dir, "data"), ARGON2_MEMORY_KIB: "1024", ARGON2_ITERATIONS: "1", VAULT_SCRYPT_N: "1024", PROVIDER_MODE: "mock", OFFLINE_MODEL_CONFIG: "off", ONLINE_MODEL_API_KEY: "", GEMINI_API_KEY: "", AUTOPILOT_TICK_MS: "200", BIRUNI_INITIAL_PIN: "", BIRUNI_MCP_TOKEN: TOKEN },
     stdio: ["ignore", "pipe", "pipe"],
   });
   proc.stderr!.on("data", (d) => (stderr += d));

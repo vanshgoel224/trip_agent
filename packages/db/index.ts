@@ -92,11 +92,11 @@ export class Store {
   }
 
   // ---------- encryption at rest ----------
-  private seal(json: string) {
-    return this.cipher ? this.cipher.encrypt(json) : json;
+  private seal(json: string, table: string, id: string) {
+    return this.cipher ? this.cipher.encrypt(json, `${table}:${id}`) : json;
   }
-  private open(stored: string) {
-    return this.cipher ? this.cipher.decrypt(stored) : stored;
+  private open(stored: string, table: string, id: string) {
+    return this.cipher ? this.cipher.decrypt(stored, `${table}:${id}`) : stored;
   }
   get encrypted() {
     return !!this.cipher;
@@ -108,9 +108,10 @@ export class Store {
     let n = 0;
     this.tx(() => {
       for (const t of TABLES) {
-        const rows = this.db.prepare(`SELECT id, data FROM ${t} WHERE data NOT LIKE 'enc1:%'`).all() as { id: string; data: string }[];
+        // Plaintext rows and enc1 rows (no AAD) are upgraded to enc2 (bound to table:id).
+        const rows = this.db.prepare(`SELECT id, data FROM ${t} WHERE data NOT LIKE 'enc2:%'`).all() as { id: string; data: string }[];
         const upd = this.db.prepare(`UPDATE ${t} SET data = ? WHERE id = ?`);
-        for (const r of rows) (upd.run(this.cipher!.encrypt(r.data), r.id), n++);
+        for (const r of rows) (upd.run(this.cipher!.encrypt(this.cipher!.decrypt(r.data), `${t}:${r.id}`), r.id), n++);
       }
     });
     return n;
@@ -123,7 +124,7 @@ export class Store {
       for (const t of TABLES) {
         const rows = this.db.prepare(`SELECT id, data FROM ${t}`).all() as { id: string; data: string }[];
         const upd = this.db.prepare(`UPDATE ${t} SET data = ? WHERE id = ?`);
-        for (const r of rows) (upd.run(to.encrypt(from.decrypt(r.data)), r.id), n++);
+        for (const r of rows) (upd.run(to.encrypt(from.decrypt(r.data, `${t}:${r.id}`), `${t}:${r.id}`), r.id), n++);
       }
       this.db.prepare("UPDATE vault SET data = ? WHERE id = 1").run(vaultRow);
     });
@@ -151,14 +152,14 @@ export class Store {
          ON CONFLICT(id) DO UPDATE SET trip_id=excluded.trip_id, incident_id=excluded.incident_id,
            key=excluded.key, data=excluded.data, updated_at=excluded.updated_at`,
       )
-      .run(id, keyOf(meta.tripId, true), keyOf(meta.incidentId, true), keyOf(meta.key, true), this.seal(JSON.stringify(doc)), now, now);
+      .run(id, keyOf(meta.tripId, true), keyOf(meta.incidentId, true), keyOf(meta.key, true), this.seal(JSON.stringify(doc), table, id), now, now);
     return doc;
   }
 
   get<T>(table: Table, id: string): T | undefined {
     if (typeof id !== "string" && typeof id !== "number") return undefined; // ids from request bodies can be anything
     const row = this.stmt(`SELECT data FROM ${table} WHERE id = ?`).get(String(id)) as { data: string } | undefined;
-    return row ? (JSON.parse(this.open(row.data)) as T) : undefined;
+    return row ? (JSON.parse(this.open(row.data, table, String(id))) as T) : undefined;
   }
 
   list<T>(table: Table, filter: Meta = {}): T[] {
@@ -167,8 +168,8 @@ export class Store {
     if (filter.tripId) (where.push("trip_id = ?"), args.push(keyOf(filter.tripId)!));
     if (filter.incidentId) (where.push("incident_id = ?"), args.push(keyOf(filter.incidentId)!));
     if (filter.key) (where.push("key = ?"), args.push(keyOf(filter.key)!));
-    const sql = `SELECT data FROM ${table}${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at, rowid`;
-    return (this.stmt(sql).all(...args) as { data: string }[]).map((r) => JSON.parse(this.open(r.data)) as T);
+    const sql = `SELECT id, data FROM ${table}${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at, rowid`;
+    return (this.stmt(sql).all(...args) as { id: string; data: string }[]).map((r) => JSON.parse(this.open(r.data, table, r.id)) as T);
   }
 
   findByKey<T>(table: Table, key: string): T | undefined {

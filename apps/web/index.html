@@ -19,15 +19,20 @@
     <div class="lock-box">
       <img class="hero-logo" src="icons/icon-192.png" alt="" width="64" height="64" />
       <h1>Biruni</h1>
-      <p class="muted" id="lockMsg">Enter your PIN</p>
+      <p class="muted" id="lockMsg">Sign in</p>
+      <p class="sos-waiting hidden" id="sosWaiting" role="alert"></p>
       <form id="lockForm" autocomplete="off">
+        <input id="userInput" type="text" autocapitalize="none" autocomplete="username" maxlength="32" placeholder="Username" aria-label="Username" />
+        <input id="nameInput" class="hidden" type="text" maxlength="40" placeholder="Your name (optional)" aria-label="Your name" />
         <input id="pinInput" type="password" inputmode="numeric" autocomplete="current-password" maxlength="64" placeholder="PIN" aria-label="PIN" />
         <input id="pinConfirm" class="hidden" type="password" inputmode="numeric" maxlength="64" placeholder="Repeat PIN" aria-label="Repeat PIN" />
         <div class="pinpad" id="pinpad"></div>
-        <button class="pill accent" id="pinGo">Unlock</button>
+        <button class="pill accent" id="pinGo">Sign in</button>
       </form>
       <p class="lock-err" id="lockErr" role="alert"></p>
-      <p class="muted small">Your data is encrypted with a key made from this PIN.</p>
+      <button type="button" class="linkish" id="lockSwitch">New here? Create an account</button>
+      <p class="muted small">Your data is encrypted with a key only your PIN can unlock. Each person on this phone or server has their own private space.</p>
+      <p class="muted small legal-line">Biruni™ helps — you decide. <a href="legal.html" target="_blank" rel="noopener">Terms &amp; licence</a></p>
     </div>
   </div>
   <div class="app">

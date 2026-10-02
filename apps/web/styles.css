@@ -238,3 +238,36 @@ dialog:has(.wide) { width: min(860px, calc(100vw - 24px)); }
 .model-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
 .model-grid input { min-width: 0; }
 @media (max-width: 600px) { .model-grid { grid-template-columns: 1fr; } }
+
+/* ---- SOS ---- */
+.sos-btn { background: #d92d20; color: #fff; border: 0; border-radius: 999px; padding: 6px 14px; font-weight: 800; letter-spacing: .5px; }
+.sos-btn.pulse { animation: sosPulse 1.2s infinite; }
+@keyframes sosPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(217, 45, 32, .6); } 50% { box-shadow: 0 0 0 8px rgba(217, 45, 32, 0); } }
+.pill.danger { background: #d92d20; color: #fff; border-color: #d92d20; }
+.pill.big { padding: 12px 18px; font-size: 17px; font-weight: 700; width: 100%; }
+.emergency-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.emergency-row a { text-decoration: none; }
+.sos-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin: 8px 0; }
+.sos-card.active { border-color: #d92d20; }
+.ok-card { border: 1px solid var(--ok); border-radius: 12px; padding: 10px; margin: 8px 0; }
+.sos-waiting { background: rgba(217, 45, 32, .12); color: #d92d20; border-radius: 10px; padding: 8px 10px; font-weight: 600; }
+#sosMsg { width: 100%; }
+
+/* ---- people, legal, power ---- */
+.linkish { background: none; border: 0; color: var(--link); text-decoration: underline; padding: 4px; }
+.legal-line { font-size: 12px; }
+.legal-line a { color: var(--link); }
+.mono { font-family: ui-monospace, monospace; letter-spacing: .3px; }
+.share-chat { max-height: 240px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
+.tag { font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 6px; color: var(--muted); }
+.big-num { font-size: 22px; font-weight: 700; margin: 0; }
+.pwr-row { display: grid; grid-template-columns: 1fr 2fr 40px; gap: 8px; align-items: center; font-size: 13px; margin: 6px 0; }
+.pwr-bar { height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; }
+.pwr-bar i { display: block; height: 100%; background: var(--accent); }
+#userInput, #nameInput { width: 100%; }
+.modal label.row { display: flex; gap: 8px; align-items: center; color: var(--ink); }
+.form-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.form-row input[type=text], .form-row input:not([type]), .form-row input[name] { flex: 1 1 180px; min-width: 0; }
+.form-row label { display: flex !important; gap: 6px; align-items: center; }
+.mcp-row { flex-wrap: wrap; }
+.mcp-row > span:first-child { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }

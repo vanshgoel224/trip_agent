@@ -35,7 +35,7 @@ import { inr } from "../packages/shared";
 
 export type Biruni = ReturnType<typeof createBiruni>;
 
-export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; providers?: Providers; cipher?: Cipher } = {}) {
+export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; providers?: Providers; cipher?: Cipher; context?: <T>(fn: () => T) => T } = {}) {
   const store = new Store(opts.dbPath ?? ":memory:", opts.cipher);
   if (opts.cipher) store.encryptAll(); // migrate rows written before the PIN existed
   const providers = opts.providers ?? createProviders();
@@ -101,7 +101,7 @@ export function createBiruni(opts: { dbPath?: string; undoWindowMs?: number; pro
     return done;
   });
   const modelSettings = new ModelSettings(store);
-  const autopilot = new Autopilot({ store, orchestrator, voice, devices, runWithModels: (fn) => modelSettings.run(fn) });
+  const autopilot = new Autopilot({ store, orchestrator, voice, devices, runWithModels: (fn) => (opts.context ?? ((f) => f()))(() => modelSettings.run(fn)) });
   const telephony = new Telephony({ negotiator });
   negotiator.telephony = telephony;
   const feed = new OperatorFeed({ store, autopilot, partners });
