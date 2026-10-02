@@ -3,7 +3,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
@@ -35,10 +35,13 @@ async function start() {
   throw new Error("server didn't start: " + stderr);
 }
 
+const PROGRESS = join(tmpdir(), "biruni-fuzz-progress.log");
+const phase = (s: string) => appendFileSync(PROGRESS, `${new Date().toISOString()} ${s}\n`);
 const alive = async () => (await fetch(`${URL0}/api/lock/status`)).ok && proc.exitCode === null;
 
 test("server survives malformed input on every route, locked and unlocked", { timeout: 900_000 }, async () => {
   await start();
+  phase("locked");
   // Locked: everything is refused cleanly.
   assert.equal((await fetch(`${URL0}/api/chats`)).status, 401);
   // Bad PINs, bad JSON, huge PIN.
@@ -46,18 +49,20 @@ test("server survives malformed input on every route, locked and unlocked", { ti
     const r = await fetch(`${URL0}/api/lock/setup`, { method: "POST", body, headers: { "content-type": "application/json" } });
     assert.ok(r.status >= 400 && r.status < 500, `setup ${body.slice(0, 20)} → ${r.status}`);
   }
+  phase("concurrent");
   // Concurrent setup/unlock must not boot twice or crash.
   const setups = await Promise.all([1, 2, 3].map(() => fetch(`${URL0}/api/lock/setup`, { method: "POST", body: JSON.stringify({ pin: "1234" }) })));
   assert.equal(setups.filter((r) => r.ok).length, 1, "exactly one setup wins");
-  const un = await Promise.all([1, 2, 3].map(() => fetch(`${URL0}/api/lock/unlock`, { method: "POST", body: JSON.stringify({ pin: "1234" }) })));
+  const un = await Promise.all([1, 2, 3].map(() => fetch(`${URL0}/api/lock/unlock`, { method: "POST", body: JSON.stringify({ username: "owner", pin: "1234" }) })));
   assert.ok(un.every((r) => r.ok));
   const cookie = un[0].headers.get("set-cookie")!.split(";")[0];
   COOKIE.value = cookie;
   const H = { cookie, "content-type": "application/json" };
-  assert.equal((await fetch(`${URL0}/api/lock/unlock`, { method: "POST", body: '{"pin":"0000"}' })).status, 401);
+  assert.equal((await fetch(`${URL0}/api/lock/unlock`, { method: "POST", body: '{"username":"owner","pin":"0000"}' })).status, 401);
 
+  phase("routes");
   // Every route from the source, every method, hostile bodies and params.
-  const src = readFileSync("apps/api/src/server.ts", "utf8");
+  const src = readdirSync("apps/api/src/routes").map((f) => readFileSync(join("apps/api/src/routes", f), "utf8")).join("\n");
   const routes = [...src.matchAll(/route\("(GET|POST)", "([^"]+)"/g)].map((m) => ({ method: m[1], path: m[2] }));
   assert.ok(routes.length > 40, `found ${routes.length} routes`);
   const params = ["..%2F..%2Fetc%2Fpasswd", "' OR 1=1 --", "😀".repeat(50)];
@@ -72,6 +77,7 @@ test("server survives malformed input on every route, locked and unlocked", { ti
       const path = r.path.replace(/:[a-zA-Z]+/g, p);
       for (const body of r.method === "POST" ? bodies : [""]) {
         const t0 = Date.now();
+        phase(`${r.method} ${path.slice(0, 60)} body=${body.slice(0, 15)}`);
         const res = await fetch(`${URL0}${path}?tripId=${encodeURIComponent(p)}&q=${encodeURIComponent(p)}`, { method: r.method, headers: H, body: r.method === "POST" ? body : undefined, signal: AbortSignal.timeout(20_000) }).catch((e) => e);
         requests++;
         if (Date.now() - t0 > 4000) {
@@ -94,28 +100,34 @@ test("server survives malformed input on every route, locked and unlocked", { ti
   assert.ok(({} as any).polluted === undefined);
   assert.ok(await alive(), "still alive after " + requests + " hostile requests");
 
+  phase("traversal");
   // Path traversal on static files.
   for (const p of ["/../package.json", "/..%2F..%2F.env", "/%2e%2e/%2e%2e/.env", "/vendor/../../../.env"]) {
     const r = await fetch(`${URL0}${p}`);
     const t = await r.text();
     assert.ok(!t.includes("GEMINI_API_KEY") && !t.includes('"dependencies"'), `traversal ${p} leaked`);
   }
+  phase("static");
   // Static assets the app needs offline are served locally.
   for (const p of ["/", "/vendor/maplibre-gl.js", "/vendor/maplibre-gl.css", "/manifest.webmanifest", "/sw.js", "/icons/icon-192.png", "/icons/maskable-512.png"]) {
     const r = await fetch(`${URL0}${p}`);
     assert.equal(r.status, 200, p);
   }
 
+  phase("socket");
   // Raw socket garbage, aborted uploads, abrupt disconnects on SSE.
   await new Promise<void>((res) => {
     const s = connect(PORT, "127.0.0.1", () => s.end("GARBAGE \x00\x01 HTTP/9\r\n\r\n"));
+    s.resume(); // read the server's 400 so the socket can close
     s.on("close", () => res()).on("error", () => res());
   });
+  phase("sse");
   const ctrl = new AbortController();
   const sse = fetch(`${URL0}/api/events`, { headers: H, signal: ctrl.signal }).catch(() => {});
   await new Promise((r) => setTimeout(r, 300));
   ctrl.abort();
   await sse;
+  phase("partial-upload");
   await new Promise<void>((res) => {
     const s = connect(PORT, "127.0.0.1", () => {
       s.write(`POST /api/chats HTTP/1.1\r\nHost: x\r\nCookie: ${cookie}\r\nContent-Length: 100000\r\n\r\n{"mode":`);
@@ -123,6 +135,7 @@ test("server survives malformed input on every route, locked and unlocked", { ti
     });
     s.on("close", () => res()).on("error", () => res());
   });
+  phase("parallel");
   // Many parallel chats while the autopilot ticks.
   const sc = await (await fetch(`${URL0}/api/scenarios/A`, { method: "POST", headers: H })).json().catch(() => ({}));
   const tripId = (sc as any).tripId;

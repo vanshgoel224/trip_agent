@@ -57,15 +57,15 @@
       <nav class="chat-list" id="chatList" aria-label="Chats"></nav>
 
       <div class="side-footer">
-        <button class="side-link" id="memoryBtn">⌘ Memory graph</button>
-        <button class="side-link" id="connBtn">⚙ Connections</button>
+        <button class="side-link" id="memoryBtn">🧠 What Biruni remembers</button>
+        <button class="side-link" id="connBtn">⚙️ Settings &amp; connections</button>
         <button class="side-link" id="feedbackBtn">💬 Send feedback</button>
-        <button class="side-link" id="lockBtn">🔒 Lock</button>
+        <button class="side-link" id="lockBtn">🔒 Lock / switch user</button>
         <div class="toggles">
-          <label><input type="checkbox" id="online" checked /> Online</label>
-          <label><input type="checkbox" id="speak" /> Speak replies</label>
-          <label><input type="checkbox" id="gps" /> Share location</label>
-          <label><input type="checkbox" id="motion" /> Crash detection</label>
+          <label title="Off = only the local model and built-in rules"><input type="checkbox" id="online" checked /> Use online AI</label>
+          <label><input type="checkbox" id="speak" /> Read replies aloud</label>
+          <label title="Saved encrypted on this phone too, for SOS"><input type="checkbox" id="gps" /> Share my location</label>
+          <label title="A hard jolt followed by stillness asks if you are OK"><input type="checkbox" id="motion" /> Fall / crash check-in</label>
         </div>
         <label class="voice-lang">Voice <select id="voiceLang" aria-label="Voice language"></select></label>
       </div>
@@ -90,8 +90,8 @@
       <section class="messages" id="messages" aria-live="polite">
         <div class="hero" id="hero">
           <img class="hero-logo" src="icons/icon-192.png" alt="" width="64" height="64" />
-          <h1>Where to?</h1>
-          <p class="muted">Plans, disruptions, translation, splitting bills, maps — one place.</p>
+          <h1>Namaste! Where to?</h1>
+          <p class="muted">Tell me in your own words — English, Hindi, Hinglish, Tamil… I can plan, rebook when things go wrong, translate, split bills, find your way and get help.</p>
           <div class="chips" id="modeChips"></div>
         </div>
       </section>
@@ -104,11 +104,11 @@
       </div>
 
       <form class="composer" id="composer">
-        <textarea id="input" rows="1" placeholder="Ask Biruni anything…" autocomplete="off"></textarea>
+        <textarea id="input" rows="1" placeholder="Type or tap 🎤 — e.g. “my bus got cancelled”, “split ₹1200 cab with Rahul”" autocomplete="off"></textarea>
         <button type="button" class="icon-btn" id="mic" title="Voice input">🎤</button>
         <button type="submit" class="send" id="send" aria-label="Send">↑</button>
       </form>
-      <p class="foot muted" id="footNote">Biruni can book within ₹2,000 per disruption on its own. Every action can be undone for 30 seconds.</p>
+      <p class="foot muted" id="footNote">I can rebook within ₹2,000 per disruption on my own, and you can undo anything for 30 seconds.</p>
     </main>
 
     <!-- Trip drawer -->
@@ -200,7 +200,7 @@
 
   <dialog id="connDialog">
     <div class="modal wide">
-      <div class="row between"><h2>Connections</h2><button class="icon-btn" data-close>✕</button></div>
+      <div class="row between"><h2>Settings &amp; connections</h2><button class="icon-btn" data-close>✕</button></div>
       <div id="connList" class="conn-list"></div>
       <h3>Models — bring your own key</h3>
       <p class="muted small">Pick any LLM (Anthropic, Gemini, NVIDIA, DeepSeek, OpenAI, OpenRouter, Groq, Mistral, Together, Ollama, Hermes, or any OpenAI-compatible URL). Top row is tried first; on error Biruni falls back to the next, then to rules. Keys are encrypted with your PIN and never sent back to this page.</p>

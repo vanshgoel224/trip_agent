@@ -1,0 +1,12 @@
+node_modules
+apps/mobile/node_modules
+apps/mobile/android
+data
+memory-out
+*.db
+*.db-*
+.env
+.env.*
+!.env.example
+.git
+graphify-out

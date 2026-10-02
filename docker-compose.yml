@@ -1,0 +1,15 @@
+# docker compose up -d       → app on http://localhost:8787 (data in the biruni-data volume)
+# docker compose run --rm test → full test suite in a container
+services:
+  biruni:
+    build: { context: ., target: runtime }
+    ports: ["8787:8787"]
+    env_file: [{ path: .env, required: false }]
+    volumes: ["biruni-data:/data"]
+    restart: unless-stopped
+  test:
+    build: { context: ., target: test }
+    profiles: ["test"]
+    command: ["sh", "-c", "npm test && npm run test:e2e"]
+volumes:
+  biruni-data:

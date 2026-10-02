@@ -1,0 +1,24 @@
+# Typecheck + full test suite inside Docker (the same image stage you can run locally:
+#   docker build --target test .   or   docker compose run --rm test)
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-in-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit + integration tests (Docker, target=test)
+        run: docker build --target test -t biruni:test .
+      - name: End-to-end robustness tests (fuzz + remote MCP) in the test image
+        run: docker run --rm -e PROVIDER_MODE=mock -e OFFLINE_MODEL_CONFIG=off biruni:test npm run test:e2e
+      - name: Runtime image builds and becomes healthy
+        run: |
+          docker build -t biruni:latest .
+          docker run -d --name biruni -p 8787:8787 -e PROVIDER_MODE=mock biruni:latest
+          for i in $(seq 1 30); do s=$(docker inspect --format '{{.State.Health.Status}}' biruni); [ "$s" = healthy ] && break; sleep 2; done
+          docker inspect --format '{{.State.Health.Status}}' biruni | grep -q healthy
+          curl -fsS http://127.0.0.1:8787/api/lock/status
