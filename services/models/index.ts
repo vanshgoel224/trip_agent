@@ -48,8 +48,13 @@ export async function resolveGeminiModel(apiKey: string, timeoutMs = 10000): Pro
   if (!res.ok) throw new Error(`Gemini model list HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const j = (await res.json()) as { data?: { id: string }[] };
   const available = (j.data ?? []).map((m) => m.id.replace(/^models\//, ""));
-  const text = available.filter((m) => m.startsWith("gemini") && !/embed|image|tts|audio|live|vision|thinking/.test(m));
-  const pick = text.find((m) => /flash/.test(m) && !/lite|preview|exp/.test(m)) ?? text.find((m) => /flash/.test(m)) ?? text[0];
+  const text = available.filter((m) => m.startsWith("gemini") && !/embed|image|tts|audio|live|vision|thinking|transcribe|robotics|computer-use|omni|customtools/.test(m));
+  // Newest numbered version first: older ones get retired for new keys.
+  const version = (m: string) => Number(m.match(/^gemini-(\d+(?:\.\d+)?)/)?.[1] ?? 0);
+  const byNewest = [...text].sort((a, b) => version(b) - version(a));
+  // Intent classification is a small job: the newest stable flash-lite measured ~0.7s
+  // vs 3-28s for full flash in testing, with the same answers.
+  const pick = byNewest.find((m) => /-flash-lite$/.test(m)) ?? byNewest.find((m) => /-flash$/.test(m)) ?? byNewest[0];
   if (!pick) throw new Error("no usable Gemini text model for this key");
   geminiModel = pick;
   return { model: pick, available };
@@ -90,7 +95,20 @@ Return ONLY JSON: {"intent": one of REPORT_DISRUPTION|UNDO|APPROVE|DECLINE|STATU
 "disruptionClass": optional, one of SAFETY|ROUTE_BLOCKED|LOGISTICAL}.
 SAFETY = any risk to the person. ROUTE_BLOCKED = the route is physically blocked. LOGISTICAL = cancellations, delays, missed connections.`;
 
+/** One retry on 429/503 (provider overload), within the same overall timeout. */
 export async function chat(ep: Endpoint, user: string, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  try {
+    return await chatOnce(ep, user, timeoutMs);
+  } catch (e) {
+    const left = deadline - Date.now();
+    if (!/HTTP (429|503)/.test(String(e)) || left < 1500) throw e;
+    await new Promise((r) => setTimeout(r, 500));
+    return chatOnce(ep, user, left - 500);
+  }
+}
+
+async function chatOnce(ep: Endpoint, user: string, timeoutMs: number): Promise<string> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {

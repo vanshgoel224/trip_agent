@@ -90,6 +90,14 @@ All fares, balances and vendors are **simulated and fictional**. They aren't rea
 export ONLINE_MODEL_API_KEY=nvapi-...      # NVIDIA key; never commit it
 # or, as a temporary stand-in for Nemotron (not in the Biruni design):
 export GEMINI_API_KEY=...                  # optional GEMINI_MODEL=<id> to pin a model
+```
+
+Tested with a real Gemini key: auto-pick chose `gemini-3.5-flash-lite` (~0.6s per call). It
+correctly read Hinglish messages that the keyword rules miss, e.g. "gaadi beech raste mein kharab ho
+gayi" → disruption, and "koi mera peecha kar raha hai" → SAFETY. Full `gemini-3.8-flash` took 3–28s
+and returned 503 "high demand" during testing, so it is not the default.
+
+```bash
 ollama pull qwen3:4b && ollama serve       # on the phone/laptop, for the offline model
 npm run models:check
 ```
