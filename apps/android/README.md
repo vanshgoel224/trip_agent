@@ -55,7 +55,7 @@ CI: `.github/workflows/android-native.yml` builds it and uploads `biruni-native-
 
 ## Honest limits
 
-- **Not run on a real phone.** It compiles and the pure logic is unit-tested, but I could not run the app, the
+- **Verified on a PC, not a phone.** The same JNI file was compiled for x86 Linux and run against real Qwen 2.5 1.5B: chat template, streaming, tool-call parsing and prefix-cache reuse all worked (about 2.5 s for a short tool call on 4 CPU cores; a phone will differ). In that run the model once emitted malformed tool JSON, so the agent retries once and then asks you to rephrase. **Not run on a real phone:** It compiles and the pure logic is unit-tested, but I could not run the app, the
   model, the sensors or SMS on a device here. Expect first-run fixes. Speed numbers are not measured.
 - **Small models are weak at tools.** Qwen 2.5 1.5B calls tools often but gets arguments wrong sometimes; the
   3B is better and slower. Check anything that matters.

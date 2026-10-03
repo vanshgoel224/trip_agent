@@ -43,8 +43,16 @@ Rules:
         history.put(JSONObject().put("role", "user").put("content", userText))
         try {
             repeat(MAX_STEPS) {
-                val raw = generateWithTrim(onEvent)
-                val msg = llm.parse(raw)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: JSONObject().put("role", "assistant").put("content", raw)
+                var raw = generateWithTrim(onEvent)
+                var msg = llm.parse(raw)?.let { runCatching { JSONObject(it) }.getOrNull() }
+                // Small models sometimes emit malformed tool JSON. Retry once; never show raw tool markup.
+                if (msg == null && raw.contains("<tool_call>")) {
+                    onEvent(AgentEvent("token", ""))
+                    raw = generateWithTrim(onEvent)
+                    msg = llm.parse(raw)?.let { runCatching { JSONObject(it) }.getOrNull() }
+                    if (msg == null) msg = JSONObject().put("role", "assistant").put("content", "I couldn't work out that action. Please rephrase it more simply.")
+                }
+                msg = msg ?: JSONObject().put("role", "assistant").put("content", raw)
                 val calls = msg.optJSONArray("tool_calls")
                 if (calls == null || calls.length() == 0) {
                     val text = msg.optString("content").trim().ifEmpty { "(no answer)" }
