@@ -407,7 +407,9 @@ A hard jolt (≥ 3.5 g, `IMPACT_G`) with no free fall, followed by stillness, ma
 - No extra installs.
 - Has full device voice through Chrome's speech, and the app shell works offline.
 
-**APK:**
+**Native Android app (`apps/android`):** Kotlin + Jetpack Compose with **llama.cpp running on the phone via JNI**, so the agent works with no internet and no Termux. It has an on-device chat agent with trip tools (itinerary, budget, contacts, offline city cache), a model downloader (Qwen 2.5 GGUF) and a **native drop watch that runs with the screen off**, with a full-screen alarm over the lock screen, shake/key/other-device cancel, and server SOS plus SMS. It can link to your Biruni server. Details and limits: [apps/android/README.md](apps/android/README.md). Built by `.github/workflows/android-native.yml` (artifact `biruni-native-apk`). **It compiles and its logic is unit-tested, but it has not been run on a real phone.**
+
+**Web-shell APK (`apps/mobile`):**
 - Built by GitHub Actions (`.github/workflows/android-apk.yml`) on pushes that touch `apps/mobile`, and on `v*` tags (attached to a release).
 - Download it from the run's **Artifacts**. It's a debug build; allow *Install unknown apps* for your browser or file manager.
 - On first launch the app asks Android for location, microphone, camera and notifications, then asks for your server address (pre-filled from the repo variable `BIRUNI_SERVER_URL`).
@@ -542,14 +544,14 @@ These are calls the spec left open; review them before freeze.
 | Exotel calls on a real phone | no account; stream frame format unverified | test one call, adjust frame fields |
 | Gnani voice cloning | cloning API not verified | confirm with Gnani, then wire the slot in `services/style` |
 | Drop/crash thresholds | tuned on synthetic data | real-device drop tests |
-| Sensors with the app closed | web apps can't run sensors in the background | a native background service |
+| Sensors with the app closed | web apps can't; the native app's foreground service can, but is untested on real phones and may be killed by aggressive battery managers | real-device tests |
 | SOS push when the app is closed / across servers | alerts reach users of the same server, live or at next sign-in | Web Push / FCM |
 | Pine Labs autonomous debit | gateways need a mandate | a mandate product |
 | Delhivery waybill creation | request format not public | Delhivery One portal access |
 | WhatsApp cold outreach | 24-hour rule | an approved template |
 | Train/bus live status | no official public API (forwarded SMS works) | IRCTC/aggregator partner access |
 | APK voice without Gnani | WebView lacks Web Speech | Gnani keys or native speech plugins |
-| On-phone local model | Hermes/Ollama run on a computer | a native on-device build (llama.cpp or MLC) |
+| On-phone local model | Hermes/Ollama run on a computer. The native app (`apps/android`) runs llama.cpp on the phone but is untested on real hardware | test on devices; measure speed |
 | Vercel hosting | stateless, no disk | hosted DB + cron, or an always-on host |
 | Multi-device key sync across servers | one server holds the encrypted spaces | key sync |
 | Low-resource language quality | depends on the model | native-speaker review, stronger model |
@@ -569,6 +571,7 @@ apps/api/src             server.ts (sign-in, isolation, webhooks, static), http.
 apps/api/src/routes      trips, chat, device, travel, models, connections, autopilot, deals, feedback,
                          social, falls, style (one file per feature)
 apps/mobile              Capacitor Android shell (launcher, permissions); APK built in Actions
+apps/android             native Kotlin/Compose app with on-device llama.cpp (JNI), offline trip tools, native drop watch
 apps/phone-offline       earlier offline Python agent
 config/hermes            hardened Hermes Agent config (tools off, localhost only)
 services/orchestrator    planner, router, state machine, authority, chat agent, chats

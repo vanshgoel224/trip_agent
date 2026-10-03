@@ -1,0 +1,30 @@
+# Same AGP/Kotlin/Gradle versions as llama.cpp's own Android example at the pinned tag.
+[versions]
+agp = "8.13.2"
+kotlin = "2.3.0"
+core-ktx = "1.17.0"
+activity-compose = "1.12.2"
+lifecycle = "2.10.0"
+compose-bom = "2025.12.00"
+coroutines = "1.11.0"
+junit = "4.13.2"
+json = "20260814"
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "core-ktx" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activity-compose" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-lifecycle-service = { group = "androidx.lifecycle", name = "lifecycle-service", version.ref = "lifecycle" }
+compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "compose-bom" }
+compose-ui = { group = "androidx.compose.ui", name = "ui" }
+compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+compose-icons = { group = "androidx.compose.material", name = "material-icons-extended" }
+compose-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+json = { group = "org.json", name = "json", version.ref = "json" }

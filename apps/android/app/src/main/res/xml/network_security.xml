@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android cannot whitelist IP ranges here, so cleartext is allowed at this level and the app
+     itself (net/BiruniClient.kt) refuses http:// unless the host is localhost or a private /
+     Tailscale address (a Biruni server on your own Wi-Fi). Everything else must be https://. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
