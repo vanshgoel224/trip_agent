@@ -1,81 +1,109 @@
-# Biruni: Round 3 prototype
+# Biruni
 
 > Get the traveller home safe, with the trip they paid for and money they had already promised elsewhere untouched.
 
-This is a working prototype of the Biruni agent for the KEN Case Competition, Round 3. It follows `Biruni_Round3_Implementation_Spec.md`. One orchestrator and six specialists handle disruptions on their own, inside a deterministic authority contract. They reach the outside world only through Biruni's own MCP server.
+Biruni is a travel-recovery agent for India, built as the working prototype for the KEN Case Competition, Round 3 (spec: `Biruni_Round3_Implementation_Spec.md`). When a train is cancelled, a bus breaks down or a flight slips, Biruni re-plans and can rebook **on its own within ₹2,000 per incident**, with a 30-second undo. Anything above that, or anything that would touch rent, EMIs or other committed money, needs your yes. Around that core there is a chat app with a function-specific chat for each job, maps, translation in 23 Indian languages, expense splitting, booking, negotiation, SOS, drop detection and encrypted multi-user accounts. It ships as a web app, a PWA, an Android APK, a Docker image and an MCP server.
 
-On top of the spec's recovery engine there is a conversational layer:
-- a Grok-style chat UI with **separate chats per function** (general, recovery, translator, split expenses, discover, maps, calendar, budget)
-- a tool-calling LLM (Gemini stand-in now, Nemotron when its key is set, Qwen offline)
-- **long-term memory** stored as a knowledge graph in graphify's format
-- voice translation across 23 Indian languages
-- phone GPS and crash detection
-- OpenStreetMap data on a MapLibre map, with directions
-- Google Calendar, Reddit, YouTube and Splitwise connectors
-- connecting **external MCP servers**
-- an **L4 autopilot** that acts on its own, inside the ₹2,000 authority
-- a **self-check** pass before replies go out
-- feedback collection
-- typo-tolerant matching everywhere
-- Delhivery parcel/luggage **booking** (simulated until a key is added)
-- light and dark themes, with an emoji and name for every chat
-- **multi-user**: each person has their own encrypted space; **shared trips** for groups, where the trip leader controls cancellations
-- **SOS help channel**: tell trip members, trusted contacts or any opted-in Biruni user "I'm stuck here", with your location
-- **travel booking** for flights, trains, buses and hotels (TBO / Agoda / EaseMyTrip slots; simulated until partner keys)
-- **operator status feed** (forwarded SMS/email, AviationStack, partner status) feeding the autopilot
-- **telephony** (Exotel SMS and live negotiation calls; simulated without keys)
-- **bring-your-own-key** models: Claude, Gemini, Nemotron, DeepSeek and more, plus Hermes Agent locally
-- a **PWA** and an **Android APK**, Docker images, and a **remote MCP** endpoint
+**Status (commit on `claude/festive-cori-29p0o8`):**
 
-**Status, bluntly (as of the latest commit):** the recovery engine, guardrails, chats, memory, expense splitting, maps, translation (text) and the MCP client are tested and work. Live adapters for Gnani, Pine Labs, Setu AA, Zerodha, Google Calendar, Reddit, YouTube and Splitwise are written from each provider's official docs or SDK but **have not been run against real accounts**: no keys were available. Without keys, those rails run on the simulator, and voice uses the device's built-in voices. Delhivery bookings are simulated until a key is added. See [What is not built](#what-is-not-built).
+| Area | State |
+|---|---|
+| Recovery engine, guardrails, authority, undo, idempotency | built and tested (102 unit/integration tests + 4 e2e suites) |
+| Chats, memory, expenses, maps, text translation, MCP client/server | built and tested |
+| AI agent with a real Gemini key | live check passes 31/31 and the adversarial check passes 11/11 (median reply 2.4 s) |
+| Load | 40 concurrent users, 0 errors, p95 < 140 ms |
+| Live partner rails: Gnani, Pine Labs, Setu AA, Zerodha, Delhivery, Exotel, Calendar, Reddit, YouTube, Splitwise, WhatsApp | written from official docs/SDKs, **never run against real accounts** (no keys). They run on the simulator until keys are added |
+| TBO / Agoda / EaseMyTrip | **slots only.** Their APIs need partner onboarding; the simulator serves bookings |
+
+All fares, balances and vendors in simulator mode are **fictional**, not market prices. See [Honest gaps](#honest-gaps).
+
+---
+
+## Contents
+
+1. [Quickstart](#quickstart)
+2. [Using the app](#using-the-app)
+3. [How recovery works](#how-recovery-works)
+4. [AI models and speed](#ai-models-and-speed)
+5. [Accounts, encryption and shared trips](#accounts-encryption-and-shared-trips)
+6. [Safety: SOS, drop and crash watch](#safety-sos-drop-and-crash-watch)
+7. [Features by chat](#features-by-chat)
+8. [Booking, operator feed, telephony, negotiation](#booking-operator-feed-telephony-negotiation)
+9. [Phone app and permissions](#phone-app-and-permissions)
+10. [Hosting and remote MCP](#hosting-and-remote-mcp)
+11. [Testing and CI/CD](#testing-and-cicd)
+12. [Configuration](#configuration)
+13. [Live rails](#live-rails)
+14. [Design decisions](#design-decisions)
+15. [Honest gaps](#honest-gaps)
+16. [Layout](#layout)
+17. [Legal](#legal)
+
+---
 
 ## Quickstart
 
-Requires Node ≥ 22.5. Persistence uses the built-in `node:sqlite`, which is still experimental in Node 22.
+You need Node 22.5 or newer. Data is stored with the built-in `node:sqlite`, which is still marked experimental in Node 22.
 
 ```bash
+git clone https://github.com/vanshgoel224/trip_agent.git && cd trip_agent
+git checkout claude/festive-cori-29p0o8
 npm install
-cp .env.example .env   # set GEMINI_API_KEY (or ONLINE_MODEL_API_KEY) and BIRUNI_INITIAL_PIN; .env is git-ignored
-npm test          # 93 tests: authority, payments, idempotency, recovery, chats, memory, models, booking, feed, telephony, multi-user, SOS
-npm run test:e2e  # real server under ~1,000 hostile requests + remote MCP
-npm run demo      # CLI walkthrough of every scenario (short undo window)
-npm start         # API + UI on http://localhost:8787 — starts LOCKED; sign in (BIRUNI_INITIAL_PIN creates user "owner")
-npm run models:check   # ping Nemotron (needs ONLINE_MODEL_API_KEY) and local Qwen/Ollama
+cp .env.example .env     # set GEMINI_API_KEY (or another model key) and BIRUNI_INITIAL_PIN
+npm start                # http://localhost:8787
 ```
 
-In the UI:
-- **＋ New chat** (sidebar or top bar, or Ctrl/Cmd+Shift+O) picks a function, or **✎ Custom chat…** where you write the instructions and pick which tool groups it may use. Double-click a chat title to rename it.
-- **General auto-files:** a General message that turns into an expense, disruption, map query, plan, translation and so on is also copied, with its reply, into that function's chat. The chat is created if needed.
-- **Commands** (no model call, except `/btw`):
-  - `/recall <name>` instantly answers from memory.
-  - `/forget <thing>` deletes it from memory.
-  - `/btw <question>` asks a side question that's answered with read-only tools and **never saved**: no chat history, no memory, no auto-filing.
-- **Trip ＋** creates your own trip (any cities).
-- **Connections** shows what's live and runs the competition demo scenarios.
-- **Memory graph** shows everything Biruni remembers.
-- **Trip ▸** opens the status, map, undo button and agent activity panel.
+- The server starts **locked**. Sign in with a username and PIN. `BIRUNI_INITIAL_PIN` creates the first user, `owner`; anyone else can create an account from the sign-in screen.
+- **No key is required to run.** Without a model key, the deterministic rules still handle disruptions, approvals, undo and status. Every partner without a key runs on the simulator and says so.
+- `.env` is git-ignored. Never commit keys.
 
-Phone sensors (GPS, accelerometer, microphone) only work on `https://` or `localhost`. To use them from a phone, put the server behind an HTTPS tunnel.
-
-### Docker
+**Docker:**
 
 ```bash
 docker compose up -d                          # app on :8787, data in the biruni-data volume
-docker compose --profile test run --rm test   # full suite + e2e inside a container
-docker build --target test .                  # what CI runs (.github/workflows/ci.yml)
-npm run check                                 # typecheck + browser syntax check + secret scan
+docker compose --profile test run --rm test   # full test suite + e2e in a container
 ```
+
 If Docker Hub rate-limits you, add `--build-arg NODE_IMAGE=mirror.gcr.io/library/node:22-slim`.
 
-## Architecture
+**Phone sensors** (GPS, mic, camera, motion) only work over `https://` or on `localhost`. To use a phone, put the server behind an HTTPS tunnel (Cloudflare Tunnel or ngrok) or host it (see [Hosting](#hosting-and-remote-mcp)).
 
-Full systems architecture, with deployment, request lifecycle, security model, code map, CRUD table, CI/CD and performance notes: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+---
+
+## Using the app
+
+| Where | What it does |
+|---|---|
+| **＋ New chat** (Ctrl/Cmd+Shift+O) | Start a chat for one function (table in [Features by chat](#features-by-chat)), or a **✎ Custom chat** with your own instructions and chosen tool groups |
+| **General** chat | Ask anything. If a message turns out to be an expense, a disruption, a map question and so on, it is also filed into that function's chat |
+| **Trip ＋ / Trip ▸** | Create a trip for any cities; open its status, map, undo button, autopilot toggle and agent activity |
+| **🚨 SOS** (red button) | Send an "I'm stuck here" alert with your location ([Safety](#safety-sos-drop-and-crash-watch)) |
+| **Drop & crash watch** | Switch on phone-drop and vehicle-crash detection |
+| **👥 People & shared trips** | Trusted contacts, shared trips, safety numbers |
+| **🗣️ My style** | Teach Biruni your words and dialect, and record a voice sample |
+| **🛡️ Permissions** | See and grant location, mic, camera, motion, notifications and storage |
+| **🔋 Power** | Battery-aware mode, plus the smart-power demo |
+| **Settings & connections** | AI models (bring your own key), connectors, external MCP servers, 🩺 Test all connections, demo scenarios, data export, delete account |
+| **Memory graph** | Everything Biruni remembers, with search |
+| **💬 Send feedback** | Product feedback |
+| ◐ / ☀ / ☾ and 🔇 | Theme, and sound on/off |
+
+**Commands** (no model call, except `/btw`):
+- `/recall <name>`: answer from memory.
+- `/forget <thing>`: delete it from memory.
+- `/btw <question>`: a side question answered with read-only tools. It is **never saved**: no history, no memory, no filing.
+
+Commands tolerate typos (`/Recal`, `/FORGT`). Double-click a chat title to rename it or change its emoji.
+
+---
+
+## How recovery works
 
 ```
 Traveller (voice/text) → apps/web → apps/api ─┐
                                               ▼
-                              services/orchestrator   (only conversational authority, holds L4 flag)
-                                              │ routes to (AgentRun rows, restart up to 3×)
+                              services/orchestrator   (only conversational authority, holds the L4 flag)
+                                              │ routes to restartable AgentRuns
      ┌──────────┬──────────┬────────────┬─────┴────┬──────────┬──────────┐
   finance    recovery   compliance     voice     travel     booking      services/agents/*
      └──────────┴──────────┴────────────┴────┬─────┴──────────┴──────────┘
@@ -83,454 +111,496 @@ Traveller (voice/text) → apps/web → apps/api ─┐
                      services/mcp  auth → schema → finance → compliance → authority
                                    → idempotency → rail (safe retries) → normalize → audit
                                               ▼
-              services/integrations  gnani · pine-labs · delhivery · setu-aa · zerodha
-                                     (interface + Mock* + live stub each)
+                     services/integrations  rails (simulator + live adapter each)
 ```
 
-| Spec rule | Where it is enforced |
+The full system architecture (deployment, request lifecycle, security model, code map, CRUD table, CI/CD and performance) is in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+### Rules the code enforces
+
+| Rule | Where |
 |---|---|
-| Orchestrator is the only conversational authority and holds L4 | `services/orchestrator/index.ts`, `authority.ts` |
-| Finance is the single writer of the obligation map and ledger | `packages/db` rejects writes to `obligations`, `authority_ledgers` and `transactions` without the one-time finance capability |
-| ₹2,000 is cumulative per incident, and the daily ceiling is separate | `FinanceAgent.ledger()` derives both from append-only holds |
-| Four checks before every action (§9) | `packages/policy` + MCP pipeline + `RecoveryAgent.run` |
-| Every MCP call passes finance and compliance checks and is audited | `services/mcp/server.ts`. Blocked calls are audited too |
-| Idempotency: `idempotency_key`, `incident_id`, `tool_call_id` | `tool_calls` table, MCP step 6, rail status reconciliation |
-| 30s undo with compensation | `services/agents/recovery/undo.ts`, persisted and rehydrated on restart |
-| Agents restart without hidden memory | recovery steps are checkpointed on the incident, and `AgentRouter` restarts from that checkpoint |
-| Model proposes, policy decides | `services/models`: the model only proposes intent and disruption class. SAFETY can't be downgraded |
-| Credentials only on the server | env is read in `services/integrations/*`; the browser only talks to `/api` |
+| The orchestrator is the only conversational authority and holds L4 | `services/orchestrator/index.ts`, `authority.ts` |
+| Finance is the only writer of obligations, ledgers and transactions | `packages/db` rejects writes without the one-time finance capability |
+| ₹2,000 is cumulative per incident; there is a separate daily ceiling | `FinanceAgent.ledger()`, from append-only holds |
+| Four checks before every action | `packages/policy` + MCP pipeline + `RecoveryAgent.run` |
+| Every MCP call passes finance and compliance checks and is audited, including blocked ones | `services/mcp/server.ts` |
+| Idempotency by `idempotency_key`, `incident_id`, `tool_call_id` | `tool_calls` table, rail status reconciliation |
+| 30 s undo with compensation, survives restart | `services/agents/recovery/undo.ts` |
+| Agents restart from checkpoints, not hidden memory | `AgentRouter` |
+| The model proposes; policy decides. Safety can't be downgraded | `services/models`, `packages/policy` |
+| Safety words escalate **before** any model is called | `packages/policy` (English fuzzy match + exact Hindi/Hinglish match) |
+| Booking and approval tools need an explicit, unhedged yes in your latest message | `explicitYes` guard: "book it? not yet", "yes but wait" and "abhi nahi" are refused |
+| Undo only on an explicit request | `explicitUndo`: "not yet" never triggers an undo |
+| Credentials stay on the server | `services/integrations/*`; the browser only talks to `/api` |
 
-### The 7 rail MCP tools (names are PROVISIONAL)
+### Demo scenarios (each verified by tests)
 
-The design artifact fixes the count at seven but doesn't list canonical names (spec §6, §32). These are working names. **Lock them against the final architecture diagram before implementation freeze.** Each rename is a one-line change in `services/mcp/schemas`.
+Run them from **Settings & connections**, or `npm run demo` for a CLI walkthrough.
 
-| Tool | Rail | Caller | Consequential |
+| | Scenario | Result |
+|---|---|---|
+| A | Recovery costs ₹1,200 | Booked on its own, audited, undo window, verified, itinerary v2, ₹800 authority left |
+| B | Recovery costs ₹2,450 | Blocked; you are asked; on yes it runs as a traveller-approved spend |
+| C | ₹1,400, but only ₹901 is free after rent + EMI | Blocked even though it's within ₹2,000; you are asked |
+| D | Pine Labs times out after charging | Status reconciled; exactly 1 charge; ledger matches |
+| LADDER | Pine Labs and UPI decline | Unverified local vendor skipped; verified one booked |
+| SAFETY | "accident… unsafe" | Autonomy stops; 112 prompt; emergency contact alerted only after a yes (unless opted in) |
+| OFFLINE | No network | Options from the pre-fetched cache; only logged cash can execute; device voice |
+| RESTART | Recovery agent crashes after paying | Restarts from checkpoint; payment returns `ALREADY_COMPLETED`; no second charge |
+
+### L4 autopilot
+
+Every 60 s (`AUTOPILOT_TICK_MS`) Biruni checks each active trip without being asked. Toggle it per trip in the Trip panel.
+
+| Signal | Decision |
+|---|---|
+| Trusted operator says CANCELLED | **ACT**: recover and book within ₹2,000 with undo, or stop and ask |
+| Cancellation from an unconfirmed source | **WAIT** for a second independent report |
+| Delay < 180 min | **NOTIFY** and keep watching |
+| Delay ≥ 180 min | **ACT** |
+| Signal for a leg that left over 3 h ago | **IGNORE** (stale) |
+| GPS + OSRM travel time + 30 min buffer > time left | **NOTIFY**: "Leave now" |
+| Departure within 3 h | **NOTIFY**: reminder |
+| Recovery finished | **ASK** for a vendor rating |
+| Another recovery already running | **WAIT** (logged) |
+
+Every decision is logged with its reasons and shown in the Trip panel. Archived trips are skipped.
+
+### The 7 rail MCP tools (names are provisional)
+
+The spec fixes the count at seven but not the names. Renaming one is a one-line change in `services/mcp/schemas`.
+
+| Tool | Rail | Caller | Moves money or bookings |
 |---|---|---|---|
 | `voice_speak` | Gnani | voice | no |
-| `route_search` | Delhivery (or offline cache) | travel | no |
+| `route_search` | Delhivery / offline cache | travel | no |
 | `vendor_verify` | vendor directory (simulated) | recovery | no |
-| `payment_execute` (charge/refund/status) | Pine Labs | recovery | yes |
-| `booking_execute` (book/cancel/verify) | booking inventory (simulated) | booking | yes |
+| `payment_execute` | Pine Labs | recovery | yes |
+| `booking_execute` | booking inventory (simulated) | booking | yes |
 | `financial_context` | Setu AA | finance | no |
-| `holdings_context` | Zerodha (read-only, no sell method exists) | finance | no |
+| `holdings_context` | Zerodha (read-only; no sell method exists) | finance | no |
 
-The server also has 3 **supporting tools**, which sit outside the spec's seven: `discovery_search` (Reddit and YouTube), `calendar_read` and `calendar_write`. They go through the same auth, compliance and audit pipeline.
+Supporting tools outside the seven: `discovery_search` (Reddit/YouTube), `calendar_read` and `calendar_write`. They go through the same pipeline. Run the server over stdio with `BIRUNI_MCP_AGENT=recovery npm run mcp:stdio`.
 
-Run them over real MCP stdio, for example with an MCP inspector: `BIRUNI_MCP_AGENT=recovery npm run mcp:stdio`.
+---
 
-The six specialist names (finance, recovery, compliance, voice, travel, booking) follow spec §4. The spec itself says the agent-to-rail mapping isn't final.
+## AI models and speed
 
-## Demo scenarios
+**Order of attempts for every reply:**
+1. **Your models** (Settings → Models), in your order.
+2. **The server's `.env` model** as backup (turn off with `BYOK_SERVER_FALLBACK=off`).
+3. **A local model**, if it passes a 0.8 s health check. The default is the **Hermes Agent** gateway (`http://127.0.0.1:8642/v1`, `HERMES_API_KEY`). Ollama works through `OFFLINE_MODEL_CONFIG`.
+4. **Deterministic rules**, which still handle disruptions, undo, approvals, status and safety.
 
-| | Scenario | Expected and verified by tests |
-|---|---|---|
-| A | Successful recovery (₹1,200) | autonomous booking, audit trail, undo window, verification, itinerary v2, readback, ₹800 authority left |
-| B | Authority exceeded (₹2,450) | blocked, traveller asked; on approval runs as a traveller-approved spend |
-| C | Obligation protected (₹1,400 with ₹901 free after rent + EMI) | blocked even though it's within authority; traveller asked |
-| D | Pine Labs times out after charging | rail status reconciled, exactly 1 charge, ledger matches |
-| LADDER | Pine Labs and UPI decline | unverified local vendor skipped, verified local vendor booked |
-| SAFETY | "accident… unsafe" | autonomy stops, 112 prompt, emergency contact alerted only after a "yes" (traveller hasn't opted in) |
-| OFFLINE | no network | options come from the pre-fetched cache, only logged cash can execute, device TTS relay |
-| RESTART | recovery agent crashes after paying | restarts from checkpoint, payment returns `ALREADY_COMPLETED`, no second charge |
+If a model fails mid-turn, the next one continues the same turn.
 
-All fares, balances and vendors are **simulated and fictional**. They aren't real market prices.
+**Bring your own key.** Each user can add Anthropic (Claude, official SDK), Gemini, NVIDIA Nemotron, DeepSeek, OpenAI, OpenRouter, Groq, Mistral, Together, Ollama, Hermes Agent or any OpenAI-compatible URL.
+- **Load models** lists what your key can actually use; **Test** measures one round trip.
+- Keys are encrypted with your PIN and only shown back masked (`••••1234`).
+- Claude uses the Messages API with `effort: medium` (`ANTHROPIC_EFFORT`).
+- Preset model names are suggestions; trust **Load models**.
 
-## Models
+**Hermes runs with its tools off.** Its API runs Hermes' own tools server-side and won't accept Biruni's tools. So Biruni sends it none, and trip actions (cancel, undo, approve) never go to a tool-less model. `config/hermes/config.yaml` disables Hermes' toolsets and binds it to 127.0.0.1. Verify the key names against your Hermes version.
 
-```bash
-export ONLINE_MODEL_API_KEY=nvapi-...      # NVIDIA key; never commit it
-# or, as a temporary stand-in for Nemotron (not in the Biruni design):
-export GEMINI_API_KEY=...                  # optional GEMINI_MODEL=<id> to pin a model
-```
+**Speed features:**
+- **Racing:** if a model takes over 2.5 s (`MODEL_HEDGE_MS`), the next one starts in parallel and the first good answer wins.
+- **Benching:** failing models are skipped for a while: rate-limited (429) 20–120 s, server errors or timeouts 10 s, bad key 5 min, retired model 1 h.
+- **Gemini rotation:** with one key, Biruni tries the fast *flash-lite* models (each has its own free-tier limit) before *flash*.
+- **No long waits:** a provider asking to retry later than 1.5 s (`MODEL_MAX_RETRY_WAIT_MS`) is skipped instead.
+- **Short side calls:** classification 4 s, self-check 5 s; past those, rules or the unchecked reply are used.
+- **Measured** (`npm run agent:check`, 13 turns, Gemini free tier): median 2.4 s, slowest 3.4 s.
+- **The real limit is the free tier.** A second provider key (Groq or DeepSeek are fast and cheap) removes it.
 
-Tested with a real Gemini key: auto-pick chose `gemini-3.5-flash-lite` (~0.6s per call). It
-correctly read Hinglish messages that the keyword rules miss, e.g. "gaadi beech raste mein kharab ho
-gayi" → disruption, and "koi mera peecha kar raha hai" → SAFETY. Full `gemini-3.8-flash` took 3–28s
-and returned 503 "high demand" during testing, so it is not the default.
+**Thinking checks in chats:**
+- The model is told to ask only when a wrong guess would cost money, time or safety; to check facts with tools; to compare at least two options; and to plan multi-step tasks (`make_plan` / `update_plan`, up to 12 steps).
+- **Self-check:** replies involving money, bookings, numbers or directions are checked against the tool results by a second call and marked "self-checked" or "self-corrected". `CRITIC=off` disables it to save quota.
+- Without any trip, the agent still helps with general travel questions.
 
-```bash
-ollama pull qwen3:4b && ollama serve       # on the phone/laptop, for the offline model
-npm run models:check
-```
+`npm run models:check` pings the configured online model and the local tier.
 
-## Accounts, encryption and multi-user
+---
 
-The key handling follows the patterns Signal and similar apps use:
-- **Your own encrypted space.** Each account has a random 256-bit **data key (DEK)**. Your data lives in its own database file, AES-256-GCM encrypted with that key.
-- **The DEK is wrapped by your PIN.** The wrapping key comes from your PIN through **Argon2id** (46 MiB, 1 pass: the OWASP-recommended setting, run in worker threads so sign-ins never freeze the server), so each guess is slow and memory-hard. Changing your PIN only re-wraps the DEK; nothing is re-encrypted.
-- **Records are bound to their place.** Every record is tied to its `table:id` with AES-GCM AAD, so ciphertext can't be swapped between rows.
-- **Identity keys.** Each user has an X25519 key pair; the private key is encrypted with their DEK.
-- **Shared trips:**
-  - A random **trip key** encrypts the group chat, itinerary snapshots and cancellation requests.
-  - That key is **sealed to each member's public key** (ephemeral X25519 + HKDF-SHA256 + AES-GCM).
-  - Removing someone **rotates the key** and re-encrypts the trip's items.
-- **Safety numbers.** You get 60 digits per pair of users; compare them in person to rule out a server swapping keys.
-- **Only the trip leader decides cancellations.** Members ask; the leader approves and the cancellation runs in the leader's own space. Leadership can be handed over.
-- **Sessions.** HttpOnly, SameSite=Strict cookies (`Secure` and HSTS when served over HTTPS) with a 30-minute idle timeout. "Sign out everywhere" drops the key from memory.
-- **Live events stay private.** Activity streams are filtered per user, so nobody sees another person's events.
-- **Upgrading from the old single-PIN version:** the first sign-in with your existing PIN adopts the old database as your account. Nothing is re-encrypted.
-- **No lockout after wrong PINs** (your choice).
+## Accounts, encryption and shared trips
 
-Limits, bluntly:
-- **The server can see some metadata:** who is in which shared trip, who sent an SOS to whom, and when. It cannot see what was said or where anyone is.
-- **Short PINs are weak if the files are stolen.** With a copy of the data files, a 4-digit PIN falls to offline guessing (Argon2id slows it but 10,000 guesses is still small). Use 6 or more digits, or a password.
-- **Unlocked keys are in server memory.** While you're unlocked, your key stays in the server's memory so the autopilot can work.
-- **`.env` is not encrypted.**
+The key handling follows the patterns used by Signal and similar apps.
+
+| Piece | How |
+|---|---|
+| Your data | Its own database file, AES-256-GCM with a random 256-bit data key (DEK) |
+| PIN | Wraps the DEK through **Argon2id** (46 MiB, 1 pass, the OWASP setting), run in worker threads so sign-ins don't freeze the server. Changing the PIN re-wraps the DEK only |
+| Records | Bound to `table:id` with AES-GCM AAD, so ciphertext can't be swapped between rows |
+| Identity | One X25519 key pair per user; the private key is encrypted with your DEK |
+| Shared trips | A trip key encrypts the group chat, itinerary snapshots and cancellation requests. It is sealed to each member (ephemeral X25519 + HKDF-SHA256 + AES-GCM) and **rotated when someone is removed** |
+| Safety numbers | 60 digits per pair of users; compare in person to rule out a key swap |
+| Sessions | HttpOnly, SameSite=Strict cookies (`Secure` + HSTS on HTTPS), 30 min idle lock; "sign out everywhere" drops the key from memory |
+| Live events | Filtered per user |
+| Wrong PINs | No lockout (your choice) |
+
+**Shared trips:** only the **trip leader** decides cancellations. Members ask; the leader approves; the cancellation runs in the leader's space. Leadership can be handed over.
+
+**Your data (CRUD):** rename, archive or delete trips; **export everything** as JSON (API keys left out); **delete your account** (PIN + typing DELETE; your shared trips pass to another member).
+
+**Limits:**
+- The server sees metadata: who is in which shared trip and who sent an SOS to whom, and when. It can't read messages or locations.
+- A 4-digit PIN is weak if the data files are stolen (10,000 guesses, even at Argon2id speed). Use 6+ digits or a password.
+- While you are signed in, your key is in server memory so the autopilot can work.
+- `.env` is not encrypted.
 - Webhooks, remote MCP and telephony act for one **service user** (`BIRUNI_SERVICE_USER`, default: the first account).
 
-## SOS help channel
+---
 
-"I'm stuck in a Himalayan cave; contact the authorities or come help before they arrive."
-- **SOS** (the red button) sends your message and location to:
-  - your shared-trip members and trusted contacts, and
-  - optionally, everyone on the server who opted in to help.
-- **Recipients answer** "I'm coming", "I've called the authorities" (with a note such as "Called SDRF, ETA 2 h"), "Seen" or "Can't help". You see every answer. Only you can mark yourself safe.
-- **It works even when locked.** The lock screen says "🚨 1 SOS alert waiting" before sign-in (a count only; details need the PIN). A live alert pops up for signed-in recipients.
-- **Emergency contact by SMS.** Your trip's emergency contact gets an SMS with a map link. It's simulated until Exotel keys are set.
-- **No server, no problem.** If the server can't be reached, the app offers a ready-made **SMS with your last known location**. That location is stored **encrypted on the phone** (PBKDF2-SHA256 600k + AES-GCM, key in memory only while signed in).
-- **112 and 108 are always one tap away. Biruni does not dispatch police or rescue.** 1363 is listed as the tourist helpline; verify it for your state.
+## Safety: SOS, drop and crash watch
 
-## Drop & crash watch
+### SOS help channel
 
-Turn on **Drop & crash watch** in the sidebar.
-- **Detection:** the phone's motion sensors watch for **free fall followed by an impact**, the signature of a dropped phone.
-- **The moment is recorded:**
-  - free-fall time and estimated height (½·g·t²)
-  - impact force in g
-  - how far it tumbled (gyroscope)
-  - the phone's angle before and after landing
-  - location and battery
-  - severity: low, medium or high
-- **The countdown runs on the server** (60 s, `FALL_CANCEL_MS`). If the phone breaks or loses signal right after the fall, the SOS still goes out.
-- **Ways to cancel, even with a broken screen or button:**
-  - tap **I'm OK**
-  - **shake the phone 3 times**
-  - **say "I'm OK" / "theek hoon"**
-  - press any key
-  - tap I'm OK on **any other phone or laptop signed into your account**
-- **No cancel means a wide-range SOS:** trip members, trusted contacts **and everyone on the server who opted in to help**, plus an SMS to the trip's emergency contact. The alert includes the drop details and location.
-- **Offline:** the countdown runs on the phone, then tries the SOS, then offers a ready-made SMS.
-- **Also kept:** the vehicle-crash check-in (hard jolt + stillness, no free fall).
-- **Tested against:** a 1.3 m drop; waist-high and 2 m+ drops; walking; a hard tap on a table; a 2 cm slip; a soft catch; and bounces.
+Example: "I'm stuck in a cave near Kedarnath; call the authorities or come help before they arrive."
 
-Honest limits:
-- **The thresholds are tuned on synthetic sensor data, not real phones.** Expect to adjust `apps/web/modules/falldetect.js` after real drop tests.
-- **Volume and power buttons can't be read by a web app.** That's why there's the shake and voice cancel instead.
-- **Motion sensors only run while the app is open.** A web app can't detect drops with the screen off or the app closed; that needs a native background service.
+- **Who gets it:** your shared-trip members, your trusted contacts and, if you choose, everyone on the server who opted in to help.
+- **What it carries:** your message and location, plus an optional photo. The photo is compressed on the phone (1280 px WebP, EXIF stripped; a 12 MP photo becomes roughly 100–150 KB), validated by its real file type, encrypted once and sealed to each recipient.
+- **Replies:** recipients answer "I'm coming", "I've called the authorities" (with a note, e.g. "Called SDRF, ETA 2 h"), "Seen" or "Can't help". Only you can mark yourself safe.
+- **Works while locked:** the lock screen shows "🚨 1 SOS alert waiting" (a count only; details need the PIN).
+- **Emergency contact SMS:** your trip's emergency contact gets an SMS with a map link through Exotel. It is simulated without Exotel keys.
+- **If the server is unreachable:** the app offers a ready SMS with your last known location. That location is stored **encrypted on the phone** (PBKDF2-SHA256 600k + AES-GCM; key in memory only while signed in).
+- **112 and 108 are always one tap away. Biruni does not dispatch police or rescue.** 1363 is shown as the tourist helpline; verify it for your state.
 
-## My style (talk like you) and your voice
+### Drop watch
 
-**🗣️ My style** (sidebar) teaches Biruni how you talk:
-- your words with their meanings (`scene = situation`, `jugaad = quick fix`), and phrases you use;
-- how to address you: aap, tum or tu;
-- your language mix and region or dialect.
+1. **Detection:** free fall followed by an impact.
+2. **Recorded:**
+   - fall time and estimated height (½·g·t²)
+   - impact in g
+   - tumble (gyroscope)
+   - angle before and after
+   - location, battery and severity
+3. **Countdown:** 60 s (`FALL_CANCEL_MS`), run **on the server**, so the SOS still goes out if the phone dies.
+4. **Cancel**, even with a broken screen:
+   - tap **I'm OK**
+   - **shake 3 times**
+   - **say "I'm OK" / "theek hoon"**
+   - press any key
+   - tap I'm OK on **another device signed into your account**
+5. **No cancel:** a **wide SOS** goes to trip members, trusted contacts and every opted-in helper, plus an SMS to the emergency contact.
+6. **Offline:** the countdown runs on the phone, then tries the SOS, then offers the SMS.
 
-It's stored encrypted and added to the AI's instructions **as data only**. Anything that reads like an instruction ("ignore…", "approve…", "spend…") is refused, and style never changes prices, safety advice or what needs your approval.
+**Tested against** synthetic sensor data: 1.3 m, waist-high and 2 m+ drops, walking, a hard tap, a 2 cm slip, a soft catch and bounces.
 
-Live example with your Gemini key, same question before and after:
-- **Before:** "I cannot access your trip details…"
-- **After:** "Arre, **tension nahi lene ka**! Train late hone ka **scene** ho gaya hai… kahan ja raha hai **tu**?"
+### Crash watch (vehicle)
 
-**My voice:**
-- Record 20–60 s reading a short passage, confirm it's your own voice, and the sample is stored encrypted. You can delete it any time.
-- **Voice cloning isn't connected.** It would be done by Gnani, but I couldn't verify that Gnani offers cloning or its API, so nothing is sent anywhere until that's confirmed. The app says so.
+A hard jolt (≥ 3.5 g, `IMPACT_G`) with no free fall, followed by stillness, makes Biruni ask "Are you OK?". With no answer in 30 s (`CRASH_CHECKIN_MS`), it escalates through the safety policy: 112 guidance, and the emergency contact is alerted only if you opted in; otherwise Biruni asks first.
 
-## Speed and multiple models
+**Limits:**
+- These are heuristics, not certified safety systems.
+- Thresholds were tuned on synthetic data. Expect to adjust `apps/web/modules/falldetect.js` after real drop tests.
+- A web app can't read volume or power buttons; that's why shake and voice cancels exist.
+- A web app can only read sensors **while it is open**. Screen-off detection needs a native background service.
 
-- **Several models in a chain:** list your models in Settings → Models (Claude, Gemini, DeepSeek, Groq, NVIDIA and others). The server's `.env` model is always kept as a backup behind yours.
-- **Racing:** if a model is slow (more than 2.5 s, `MODEL_HEDGE_MS`), the next one is started in parallel and the first answer wins.
-- **Benching:** a model that's rate-limited (429), failing (5xx), unauthorised or retired is skipped for a while, so the next turns go straight to a working model.
-- **One Gemini key, several models:** Biruni rotates through fast Gemini *flash-lite* versions, each with its own free-tier limit, before slower *flash*.
-- **Short timeouts:** classification has a 4 s cap and the self-check 5 s; past those, the rules or the unchecked reply are used.
-- **Measured with the live agent check** (`npm run agent:check`, 13 turns, Gemini free tier): **median 2.4 s, slowest 3.4 s**, 31/31 checks.
-- **The real ceiling is the free-tier limit.** A second provider key (Groq or DeepSeek are fast and cheap) removes it.
+---
 
-## Testing
+## Features by chat
+
+| Chat | What it does | Main tools |
+|---|---|---|
+| 💬 General | Anything. Also gets tools from connected external MCP servers | all |
+| 🚨 Recovery | Disruptions, approvals, undo, forwarded operator SMS | `report_disruption`, `approve_pending`, `undo_last_action` |
+| 🎫 Book travel | Flights, trains, buses, hotels | `travel_search`, `travel_book` |
+| 🤝 Negotiate | Haggle with hotels, taxis and autos in their language | negotiator |
+| 📦 Send parcel | Delhivery quote, book, track, cancel | `delivery_quote`, `delivery_book`, `delivery_track` |
+| 🗣️ Translator | Translates your latest message, with pronunciation; **Speak & translate** for voice to voice | `speak` |
+| 💸 Split expenses | Splitwise-style group expenses, balances, fewest transfers | `add_expense`, `get_balances`, `settle_up`, `splitwise_push` |
+| 🧭 Discover | Lesser-known places from Reddit and YouTube | `discover_places` |
+| 🗺️ Maps | Live location; nearby ATMs, hospitals, police and vegetarian places; turn-by-turn directions | `where_am_i`, `nearby_places`, `directions` |
+| 📅 Calendar | Read and add Google Calendar events | `calendar_list_events`, `calendar_add_event` |
+| 💰 Budget | Authority left; free balance after protected obligations | `get_budget` |
+| ✎ Custom | Your instructions plus the tool groups you choose | chosen |
+
+**Memory.**
+- Stored as a knowledge graph (`memory_nodes`, `memory_links`) and recalled into every chat; repeating a fact strengthens its link.
+- Vague, too short or too long facts are rejected.
+- Exported in graphify's node-link format through `/api/memory/graph`, or with **Export**, which writes `memory-out/graph.json` and `GRAPH_REPORT.md`.
+
+**Translation and voice.**
+- Pipeline: speech → text → LLM translation → speech, across **23 Indian languages**.
+- Without keys it uses the device's built-in voices; the Voice picker marks the ones your device can speak with 🔈.
+- With `GNANI_API_KEY`, Gnani handles speech in and out for 10 languages: en, hi, bn, ta, te, kn, ml, mr, gu, pa.
+- The other 13 get text translation plus whatever voices the phone has.
+- Wrong-script output is corrected; for example, Konkani is forced into Devanagari, not Malayalam script.
+
+**My style.**
+- Teach Biruni your words with meanings (`scene = situation`, `jugaad = quick fix`), phrases, form of address (aap, tum or tu), language mix and region.
+- Stored encrypted and given to the model **as data only**. Anything that reads like an instruction ("ignore…", "approve…", "spend…") is refused.
+- Style never changes prices, safety advice or what needs your approval.
+- **Voice sample:** record 20–60 s and confirm it's your voice; it's stored encrypted and can be deleted. **Voice cloning is not connected:** Gnani's cloning API couldn't be verified, so nothing is sent anywhere.
+
+**Maps.**
+- MapLibre (vendored locally) with OpenFreeMap vector tiles; OSM raster tiles as fallback.
+- Search uses Photon, which is typo-tolerant ("fort agauda" → Fort Aguada), then Nominatim. Nearby places use Overpass; routing uses OSRM.
+- No keys needed, but these are free community services with fair-use limits. Self-host them or pay a provider before real traffic.
+
+**Typo tolerance.**
+- Applies everywhere: commands, memory ("Rahul" = "Raahul"), names in expenses, disruption words ("cancled", "delayd") and language names ("tamill").
+- Case- and accent-insensitive Damerau-Levenshtein matching, with prefixes and any word order. Very short words must match exactly.
+
+**Feedback.**
+- 👍/👎 on every reply.
+- 1–5★ vendor ratings after a recovery. A vendor rated below 3.5★ drops off the recovery ladder.
+- "the bus was awful, 2/5" in any chat is recorded.
+- Export with `/api/feedback.csv`.
+
+**External MCP servers.** Add any HTTP MCP server in Settings. stdio servers, which run local commands, are only allowed through the server-side `BIRUNI_MCP_SERVERS` setting, so a web page can't start commands. External tools never get money or approval powers, and their output is treated as untrusted.
+
+**Formatting and effects.**
+- One shared formatter (`apps/web/modules/format.js`): ₹ in lakh/crore, IST times, "5 min ago", km, +91 numbers and PNRs.
+- Sounds are generated with Web Audio (no audio files): send, receive, success, error and an SOS alarm. There are haptics and toasts; 🔇 mutes, and your phone's reduce-motion setting is honoured.
+
+**Power.**
+- Real behaviour: the app reads the battery where the browser allows. Below 20%, or with Power saver on, GPS polls every 60 s instead of 10 s.
+- **Smart power panel: a demo only.** Neither web nor Android apps can take power from other apps, and the panel says so.
+
+---
+
+## Booking, operator feed, telephony, negotiation
+
+**Travel booking.**
+- Flights, trains, buses and hotels between Indian cities, priced in ₹.
+- Bookings are idempotent and need an explicit yes plus names as on ID. They become itinerary legs that the autopilot watches.
+- **TBO, Agoda and EaseMyTrip are slots:** their APIs need partner onboarding with business KYC, so Biruni reports "not wired" rather than guessing endpoints. The simulator serves bookings meanwhile.
+
+**Operator status feed.**
+- **Forwarded SMS/email** is parsed without a model, in English and Hindi: cancelled, delays like "2 hrs 15 mins" or "२ घंटे देरी", rescheduled.
+- Send it through:
+  - the 🚨 chat
+  - `POST /api/feed/message`
+  - an SMS-forwarder app calling `POST /api/feed/inbound` with `FEED_TOKEN`
+- **Flight status** comes from AviationStack (`AVIATIONSTACK_KEY`).
+- All signals go through the autopilot's corroboration and ₹2,000 rules.
+
+**Telephony (Exotel).**
+- SMS for negotiations and SOS, plus inbound SMS.
+- **Live calls:** Biruni rings the driver or hotel. 8 kHz audio streams to `wss://…/telephony/exotel/stream/<secret>`, where speech is detected, transcribed (Gnani), passed to the negotiator and spoken back, with barge-in.
+- Simulated without keys. Verify endpoint shapes on developer.exotel.com. India requires DLT registration for SMS (`EXOTEL_DLT_*`).
+
+**Negotiator (🤝).**
+- **You set** a target and a maximum. Biruni opens below the target and concedes on a fixed schedule.
+- It accepts only within your max, takes a stated "final price" if that's within your max, and walks away politely above it.
+- **The model never picks a price;** it only reads the other side's message and phrases the next line.
+- It understands Indic digits (१२००, ௧௨௦௦, ೫೦೦), "1.5k" and numbers in words (இரண்டாயிரத்து இருநூறு = 2,200).
+- **Hotels:** agree → confirm details → recorded in plans, memory and Calendar. Taxis and autos are recorded on agreement.
+- **Channels:**
+  - **In person (relay):** the line is shown in their script with pronunciation; 🔊 speaks it; 🎤 hears the reply.
+  - **WhatsApp Business** (`WHATSAPP_*` keys, Meta signature verified). First contact needs an approved template.
+  - **Exotel** SMS and calls (above).
+- **Biruni never pays in a negotiation.** You pay the person directly.
+
+**Delhivery parcels and luggage (📦).**
+- Flow: quote (surface or express) → details → booking **only after an explicit yes** → AWB, tracking and cancel before pickup.
+- Simulated without `DELHIVERY_API_KEY` and `DELHIVERY_PICKUP_LOCATION`.
+- With keys, Biruni also files a real pickup request to `/fm/request/new/` (the auth header format is assumed; verify it in Delhivery One).
+- **Not built:** real waybill creation (its request format isn't public) and Delhivery's real tariff; the tariff is simulated.
+
+---
+
+## Phone app and permissions
+
+**PWA (recommended on Android):**
+- Open the HTTPS URL in Chrome → menu → *Install app*.
+- No extra installs.
+- Has full device voice through Chrome's speech, and the app shell works offline.
+
+**APK:**
+- Built by GitHub Actions (`.github/workflows/android-apk.yml`) on pushes that touch `apps/mobile`, and on `v*` tags (attached to a release).
+- Download it from the run's **Artifacts**. It's a debug build; allow *Install unknown apps* for your browser or file manager.
+- On first launch the app asks Android for location, microphone, camera and notifications, then asks for your server address (pre-filled from the repo variable `BIRUNI_SERVER_URL`).
+- The manifest also declares vibration, wake lock and high-rate motion sensors.
+- Limit (verify on your device): Android WebView generally lacks browser speech APIs, so voice in the APK needs Gnani keys. Use the PWA in Chrome for free device voices.
+
+**🛡️ Permissions panel:**
+- Shows the status of location, mic, camera, motion, notifications and storage: what each is for, an **Allow** button, and how to fix a block in browser or Android settings.
+- Warns when the page isn't on HTTPS.
+- Opens once after first sign-in.
+
+Hermes and Ollama run on a computer, not on the phone.
+
+---
+
+## Hosting and remote MCP
+
+**Works as-is** on any always-on host with a persistent disk:
+- Render, Railway or Fly.io with a volume
+- a small VPS (most providers have Indian regions)
+- your own PC behind Cloudflare Tunnel or ngrok
+
+**Vercel: not as-is.** Biruni is a long-running server with a local SQLite file, in-memory unlock keys, a 60 s autopilot loop and live event streams (SSE). Vercel Functions are stateless with no persistent disk. Making it work there means a hosted database plus cron; check Vercel's current limits first.
+
+**Images:** CI publishes a Docker image to GHCR on `main` and `v*` tags.
+
+**Remote MCP (use Biruni from Claude or any MCP client):**
+- Set `BIRUNI_MCP_TOKEN` (24+ random characters). The server then serves Streamable HTTP MCP at **`/mcp`**.
+- Auth: `Authorization: Bearer <token>`.
+- Tools: `biruni_chat` (the whole agent), `biruni_trips` and `biruni_trip_status`.
+- Payment rails are **not** exposed.
+- After each restart, sign in once so the encrypted data is unlocked.
+
+---
+
+## Testing and CI/CD
 
 | Command | What it does |
 |---|---|
-| `npm run check` | typecheck, browser syntax, secret scan |
-| `npm test` | 100+ unit/integration tests |
-| `npm run test:e2e` | real server: ~1,000 hostile requests, remote MCP, drop→SOS, account CRUD, compression |
-| `npm run agent:check` | live AI walkthrough of a Pune→Goa trip (memory, recovery, undo, expenses, translation, booking, haggling, operator SMS, maps, safety, `/btw`, SOS, drop) |
-| `npm run agent:check:hard` | adversarial: over-limit demands, prompt injection, gibberish, 4,500-character input, burst messages, late undo, broken first model, contradictions, Hindi-only safety |
-| `npm run load:test -- --users 40 --rounds 3` | 40 concurrent users: 0 errors, app requests p50 ~10 ms / p95 < 140 ms, memory flat |
+| `npm run check` | Typecheck, browser-module syntax check, secret scan of tracked files |
+| `npm test` | 102 unit/integration tests: authority, payments, idempotency, recovery, chat, autopilot, negotiator, security, models, booking, telephony, feed, users, falls, format, policy, style |
+| `npm run test:e2e` | Real server: ~1,000 hostile requests (fuzz), remote MCP, drop → SOS, account CRUD, compression |
+| `npm run demo` | CLI walkthrough of every demo scenario |
+| `npm run agent:check` | Live AI walkthrough of a Pune → Goa trip (needs a model key): memory, recovery, undo, expenses, translation, booking, haggling, operator SMS, maps, safety, `/btw`, SOS, drop. Add `--gap` to pace requests on a free tier |
+| `npm run agent:check:hard` | Adversarial: over-limit demands, prompt injection, gibberish, 4,500-character input, message bursts, late undo, broken first model, contradictions, Hindi-only safety |
+| `npm run load:test -- --users 40 --rounds 3` | Concurrent users; last run: 0 errors, p50 ~10 ms, p95 < 140 ms, memory flat |
+| `docker build --target test .` | The container test CI runs |
 
-## Permissions, photos, effects, data
+**Bugs these found and fixed** include:
+- Argon2 freezing the event loop under load (now in worker threads)
+- keep-alive connection resets
+- a `//` path that hung requests
+- a phantom drop alarm
+- "not yet" being treated as undo
+- a "hoon" → "khoon" safety false positive
+- Konkani coming out in the wrong script
+- unstable booking offer ids
 
-- **🛡️ Permissions** (sidebar) shows location, microphone, camera, motion, notifications and storage:
-  - what each one is for, its status, an **Allow** button, and how to fix a block (browser vs. Android settings);
-  - a warning when the page isn't on https.
-  - It opens once after first sign-in.
-  - **APK:** the launcher page asks Android for location, microphone, camera and notifications before connecting. The manifest declares these plus vibration, wake lock and high-rate motion sensors (CI adds them).
-- **SOS photo:** compressed on the phone (resize to 1280 px, WebP; a 12 MP photo becomes about 100–150 KB, with EXIF stripped). It's validated by its real file type and encrypted once for all recipients.
-- **Sounds and haptics:** generated with Web Audio (no audio files): send, receive, success, error, notify, and an SOS/drop alarm. Toasts and gentle animations, a 🔇 switch, and the phone's reduce-motion setting are honoured.
-- **Formatting:** ₹ in lakh/crore, IST times, "5 min ago", km, +91 numbers and PNRs, all from one shared module (`apps/web/modules/format.js`).
-- **Your data:**
-  - rename, archive or delete trips;
-  - **export everything** as JSON (your API keys are left out);
-  - **delete your account** (PIN + typing DELETE; shared trips pass to another member).
-- **🩺 Test all connections** (Settings) pings maps and AI providers live and reports which keyed services are configured or simulated.
+**CI/CD** (`.github/workflows/`):
+- `ci.yml`: checks → Docker test build → e2e → container health check → GHCR publish on `main` or `v*` tags.
+- `android-apk.yml`: builds the APK.
+- Dependabot keeps dependencies current.
 
-## Power
+---
 
-- **Real behaviour:** the app reads the battery where the browser allows. Below 20%, or with **Power saver** on, Biruni slows itself down (GPS every 60 s instead of 10 s).
-- **Smart power panel: a demo only.** It shows how a native build would favour Biruni, phone/SMS and maps. Neither web nor Android apps can take power from other apps, and the panel says so.
+## Configuration
 
-## Legal
+Everything is in `.env.example`. The main keys:
 
-- **First-run notice:** Biruni™ helps; you decide and you are responsible.
-- **Full terms** are at `apps/web/legal.html`.
-- **Licence:** `LICENSE` (proprietary, all rights reserved; a template, so have a lawyer review it). `NOTICE` lists third-party licences (MapLibre BSD-3, OSM ODbL and others).
+| Purpose | Keys |
+|---|---|
+| Sign-in | `BIRUNI_INITIAL_PIN`, `LOCK_IDLE_MIN`, `BIRUNI_SERVICE_USER` |
+| Online model | `GEMINI_API_KEY`, `GEMINI_MODEL`, or `ONLINE_MODEL_API_KEY` / `ONLINE_MODEL_BASE_URL` / `ONLINE_MODEL_NAME` |
+| Local model | `HERMES_URL`, `HERMES_API_KEY`, `HERMES_MODEL`, `OFFLINE_MODEL_CONFIG` |
+| Model tuning | `MODEL_TIMEOUT_MS`, `MODEL_HEDGE_MS`, `MODEL_MAX_RETRY_WAIT_MS`, `CRITIC`, `ANTHROPIC_EFFORT`, `BYOK_SERVER_FALLBACK` |
+| Autopilot and undo | `AUTOPILOT_TICK_MS`, `AUTOPILOT_DELAY_RECOVER_MIN`, `AUTOPILOT_LEAVE_BUFFER_MIN`, `UNDO_WINDOW_MS` |
+| Safety | `FALL_CANCEL_MS`, `IMPACT_G`, `CRASH_CHECKIN_MS`, `CRITICAL_BATTERY_PCT` |
+| Rails | `GNANI_*`, `PINELABS_*`, `SETU_*`, `ZERODHA_*`, `DELHIVERY_*` |
+| Booking partners | `TBO_*`, `AGODA_*`, `EASEMYTRIP_API_KEY` |
+| Feed and telephony | `FEED_TOKEN`, `AVIATIONSTACK_KEY`, `EXOTEL_*`, `TELEPHONY_WS_SECRET`, `WHATSAPP_*` |
+| Connectors | `GOOGLE_*`, `GOOGLE_CALENDAR_ICS_URL`, `REDDIT_*`, `YOUTUBE_API_KEY`, `SPLITWISE_API_KEY` |
+| Maps | `NOMINATIM_URL`, `PHOTON_URL`, `OVERPASS_URL`, `OSRM_URL`, `OSM_USER_AGENT` |
+| MCP | `BIRUNI_MCP_TOKEN`, `BIRUNI_MCP_SERVERS` |
 
-## Travel booking, operator feed, telephony
+---
 
-- **Booking** (🎫 *Book travel* chat, or `travel_search` / `travel_book` tools):
-  - Covers flights, trains, buses and hotels for any Indian city pair, priced in ₹.
-  - Bookings are idempotent and need an explicit yes plus names as on ID. They become itinerary legs the autopilot watches.
-  - **TBO / Agoda / EaseMyTrip are slots.** Their APIs come with partner onboarding (business KYC), so Biruni says "not wired" instead of guessing endpoints, and the **simulator** serves everything meanwhile.
-- **Operator status feed:**
-  - Forwarded SMS/email from operators is parsed with no model call (English and Hindi: cancelled, delay "2 hrs 15 mins" or "२ घंटे देरी", rescheduled). Use the 🚨 chat, `POST /api/feed/message`, or SMS-forwarder apps via `POST /api/feed/inbound` (`FEED_TOKEN`).
-  - **AviationStack** handles flight status (`AVIATIONSTACK_KEY`).
-  - Status changes on partner bookings are also picked up.
-  - Every signal goes through the autopilot's corroboration and ₹2,000 rules.
-- **Telephony (Exotel):**
-  - **SMS** for negotiations, plus inbound SMS.
-  - **Live calls:** Biruni rings the driver or hotel. The call flow streams 8 kHz audio to `wss://…/telephony/exotel/stream/<secret>`. Speech is detected, transcribed (Gnani), passed to the negotiator (which still decides every price deterministically) and spoken back, with barge-in.
-  - Simulated without keys. Endpoint shapes should be verified on developer.exotel.com; India needs DLT registration for SMS.
+## Live rails
 
-## Negotiator: hotels, taxis, autos
-
-The 🤝 chat negotiates and books for you in the other person's language: Tamil, Kannada, Hindi, Konkani and others.
-- **You set** the target price and a **maximum**. Biruni opens below the target and concedes on a fixed, deterministic schedule. It accepts automatically only within your max, takes a stated "final price" if that's within your max, and walks away politely above it. The model only reads the other person's message (price, yes/no, "final") and phrases the next line. It can never choose a price.
-- **It understands** prices in Indic digits (१२००, ௧௨௦௦, ೫೦೦), "1.5k", and numbers written as words (e.g. இரண்டாயிரத்து இருநூறு = 2,200; tested live).
-- **Hotels** go negotiate → agree → confirm the details → **recorded** in trip plans, memory and Google Calendar if connected. Taxis and autos are recorded on agreement.
-- **Channels:**
-  - **Relay** works today: the line to say is shown in their script with pronunciation, 🔊 speaks it in their language, and 🎤 captures their reply.
-  - **WhatsApp Business Cloud API** works with `WHATSAPP_*` keys. The inbound webhook verifies Meta's signature. WhatsApp's 24-hour rule means first contact needs an approved template.
-  - **Phone calls and SMS** need a telephony provider (Exotel, Twilio or a Gnani voice bot). They report "not connected" rather than pretending.
-- **Biruni never pays in a negotiation**; you pay the person directly.
-
-## Models: bring your own key
-
-Connections → **Models** lets each user pick their LLMs in the app (PWA or APK): Anthropic (Claude, official SDK), Gemini, NVIDIA Nemotron, DeepSeek, OpenAI, OpenRouter, Groq, Mistral, Together, Ollama, Hermes Agent, or any OpenAI-compatible URL.
-- **Order is priority.** **Load models** asks the provider for its real model list, and **Test** does one round-trip per provider and shows the latency.
-- **Keys are stored encrypted** with your PIN, like all other data. The page only ever gets them back masked (`••••1234`).
-- **With no providers saved**, the server's `.env` defaults apply.
-- **Claude** runs on the Messages API with `effort: medium` and server-side refusal fallback. Thinking blocks are echoed back unchanged.
-- Model names in the presets are suggestions. Use **Load models** to see what your key actually has.
-
-## Model fallback chain
-
-Each reply tries these in order:
-1. **Your providers**, in your order. With none saved, the online model from `.env` (Nemotron, or the Gemini stand-in).
-2. **Local model**, if it passes a 0.8 s health check. The default is the **Hermes Agent** gateway (`http://127.0.0.1:8642/v1`, bearer `HERMES_API_KEY`); Ollama is available through `OFFLINE_MODEL_CONFIG`.
-3. **Deterministic rules**, which still handle disruptions, undo, approvals and status.
-
-If one model fails mid-turn, the next one continues *the same turn*.
-
-**Hermes runs with its tools off.** Its API runs Hermes' own tools server-side and doesn't accept Biruni's tools, so:
-- Biruni sends it no tools and tells it so.
-- Trip actions (cancellation, undo, approve) never go to a tool-less model. They go to the rules.
-- `config/hermes/config.yaml` disables Hermes' toolsets (terminal, files, browser…) and binds it to 127.0.0.1. **Verify the key names against your Hermes version.**
-
-## Remote MCP (use a hosted Biruni from Claude or any MCP client)
-
-Set `BIRUNI_MCP_TOKEN` (24+ random characters). The server then serves **Streamable HTTP MCP at `/mcp`**:
-- **Tools:** `biruni_chat` (the whole agent), `biruni_trips` and `biruni_trip_status`.
-- **Auth:** `Authorization: Bearer <token>`.
-- **Payment rails are not exposed;** money only moves through the orchestrator's ₹2,000 policy.
-- **The server must be unlocked once** with the PIN after each restart, because the data is encrypted.
-
-## Hosting
-
-- **Vercel: not as-is.** Biruni is a long-running Node server with a local SQLite file, in-memory sessions, a 60 s autopilot loop and SSE. Vercel Functions are stateless with an ephemeral filesystem, so data, the unlock key and the autopilot would not survive between requests. Making it work there means moving storage to a hosted DB and the autopilot to cron. That's real work; check Vercel's current limits first.
-- **Works as-is:** any always-on host with a persistent disk, such as Render, Railway or Fly.io with a volume, a small VPS (Indian regions exist on most of them), or your own PC behind a tunnel (Cloudflare Tunnel / ngrok) for HTTPS.
-- **Phone features need HTTPS:** GPS, the mic and installing as an app all require it.
-
-## Phone app
-
-- **PWA:**
-  - On Android, open the HTTPS URL in Chrome → menu → *Install app*.
-  - Works offline for the app shell, and has full voice (Chrome's speech).
-  - No extra installs.
-- **APK:**
-  - Built by GitHub Actions (`.github/workflows/android-apk.yml`) → download from the run's *Artifacts*. It's a debug build.
-  - The first launch asks for your server address (pre-filled from the repo variable `BIRUNI_SERVER_URL`).
-  - Needs *Install unknown apps* allowed for your file manager or browser. Nothing else to install.
-  - Honest limit (verify on your device): Android WebView generally lacks the browser speech APIs that Chrome has, so in the APK, voice input and output need Gnani keys. Use the PWA in Chrome for free device voices.
-- Hermes or Ollama run on a computer, not on the phone.
-
-## L4 autopilot and critical thinking
-
-**Autopilot (on by default per trip; toggle it in the Trip panel).** Every 60 seconds (`AUTOPILOT_TICK_MS`) Biruni reviews each active trip *without being asked*:
-
-| Signal | What it decides | Why |
-|---|---|---|
-| Operator says CANCELLED (trusted feed) | **ACT**: autonomous recovery, then booking within ₹2,000 with a 30 s undo, or it stops and asks | the L4 contract |
-| Same, but from an unconfirmed source | **WAIT** until a second independent report | don't spend money on a rumour |
-| Delay under 180 min | **NOTIFY** and keep watching | least-invasive action |
-| Delay of 180 min or more | **ACT** (recovery) | likely to miss the trip |
-| Signal for a leg that left over 3 h ago | **IGNORE** | stale |
-| GPS, OSRM travel time and a 30 min buffer exceed the time left | **NOTIFY**: "Leave now" | |
-| Departure within 3 h | **NOTIFY**: reminder | |
-| Recovery finished | **ASK** for a vendor rating | ratings feed the vendor ladder |
-
-Every decision is logged with what it considered and why, and shown in the Trip panel. All money still goes through recovery and the MCP guards.
-
-The operator feed is **simulated**: Connections → "Autopilot demo" pushes cancel and delay events. A real operator, IRCTC or bus-aggregator status API would plug into `Autopilot.operatorEvent`.
-
-**Critical thinking in chats:**
-- The system prompt makes the model:
-  - clarify only when a wrong guess would cost money, time or safety
-  - check facts with tools and flag contradictions
-  - weigh at least two options on cost, time, safety and obligations
-  - plan multi-step tasks (`make_plan` / `update_plan`, up to 12 steps)
-  - verify outcomes and report uncertainty
-- **Self-check:** before a reply that involves money, bookings, numbers or directions goes out, a second model call compares the draft against the tool results. It fixes invented or contradicted details, marking the reply "self-checked" or "self-corrected". `CRITIC=off` disables it, which saves free-tier quota.
-- **Consent guard:** booking and approval tools only work if the traveller's own latest message is an explicit yes with no hedging. "book it? not yet", "yes but wait" and "abhi nahi" are all refused.
-
-## Feedback
-
-- 👍/👎 on every reply; 👎 asks what was wrong.
-- After a recovery, rate the vendor 1–5★. **Vendor ratings update that vendor's score**, so a badly rated operator falls below the ladder's 3.5★ bar and stops being used.
-- In any chat, saying "the bus was awful, 2/5" is recorded through `record_feedback`.
-- "💬 Send feedback" in the sidebar takes product feedback.
-- Connections shows a summary; export everything from `/api/feedback.csv`.
-
-## Typo-tolerant matching
-
-Matching works like a search engine:
-- case-insensitive and accent-insensitive
-- tolerates typos (Damerau-Levenshtein, transpositions count as 1)
-- matches as you type (prefixes) and in any word order
-- very short words must match exactly, to avoid false hits
-
-It's used for:
-- **slash commands:** `/Recal`, `/FORGT`, `/ BTW`
-- **memory:** recall, dedup ("Rahul" = "rahul" = "Raahul"), and `/forget`, which needs a strong match
-- **people's names in expenses**
-- **disruption and safety keywords:** "ACIDENT", "cancled", "delayd"
-- **language names:** "tamill" → ta-IN
-- **chat search** over titles and messages
-- **place search:** Photon, a typo-tolerant OpenStreetMap geocoder ("fort agauda" → Fort Aguada), then Nominatim
-
-## Delhivery parcels and luggage
-
-The 📦 chat walks through: quote (surface or express, price and ETA), then details, then booking **only after an explicit yes**, then an AWB, tracking stages, and cancelling before pickup. Without `DELHIVERY_API_KEY` and `DELHIVERY_PICKUP_LOCATION`, every booking is **simulated** and says so. With them, Biruni also files a real pickup request to Delhivery's documented `/fm/request/new/` endpoint; the auth header format is assumed, so verify it in Delhivery One. Creating a real waybill isn't implemented, because its request format isn't public. The tariff is simulated, not Delhivery's rate card.
-
-## Conversational layer
-
-| Chat | What it does | Notable tools |
-|---|---|---|
-| General | anything; also gets tools from external MCP servers | all below |
-| Recovery | disruptions, approvals, undo | `report_disruption`, `approve_pending`, `undo_last_action` |
-| Translator | translates only the latest message into the chosen language, with pronunciation; **Speak & translate** button for voice → voice | `speak` |
-| Split expenses | Splitwise-style group expenses, balances, fewest transfers to settle | `add_expense`, `get_balances`, `settle_up`, `splitwise_push` |
-| Discover | lesser-known places from Reddit and YouTube | `discover_places` |
-| Maps | live location, nearby ATMs, hospitals and police (and **vegetarian** places, using OSM's `diet:vegetarian` tag), turn-by-turn directions drawn on a MapLibre map | `where_am_i`, `nearby_places`, `directions` |
-| Custom | your own instructions plus the tool groups you tick | chosen per chat |
-| 📦 Send parcel | Delhivery quote, book, track, cancel | `delivery_quote`, `delivery_book`, `delivery_track` |
-
-Every chat has an **emoji and a name**: ✎ in the top bar or a double-click on the title opens the editor. The ◐/☀/☾ button switches between system, light and dark themes.
-| Calendar | read and add Google Calendar events | `calendar_list_events`, `calendar_add_event` |
-| Budget | authority left, free balance after protected obligations | `get_budget` |
-
-Guardrails that stay deterministic even with an LLM in the loop:
-- Safety words escalate **before** any model is asked, in every chat.
-- `approve_pending` only works if the traveller's own latest message is an explicit yes.
-- Money only moves through the recovery agent and the MCP guards.
-- Expense recording refuses an identical expense within 10 minutes unless the traveller confirms it.
-- Each chat only sees its own tools.
-- External MCP tools never get money or approval powers, and their output is treated as untrusted data.
-
-**Memory hygiene:** facts that are too short, too long or vague ("it is something") are rejected before they're stored. Use `/btw` for throwaway questions, and `/forget` to remove anything wrong. The Memory graph window has a quick-recall search that highlights matching nodes.
-
-**Memory** lives in `memory_nodes` and `memory_links` and is exported (`/api/memory/graph`, or "Export" writes `memory-out/graph.json` and `GRAPH_REPORT.md`) in graphify's networkx node-link format: `nodes`, `links` with `relation`, `confidence` and `source_file`, `hyperedges` and communities. Repeating a fact strengthens its edge. Relevant facts are recalled into every chat.
-
-**Voice translation:** speech-to-text, then LLM translation, then text-to-speech. **Right now it uses the device's built-in voices** (browser speech recognition and synthesis). The sidebar "Voice" picker marks languages your device can speak with 🔈. With `GNANI_API_KEY`, Gnani handles speech in and out for 10 languages (en, hi, bn, ta, te, kn, ml, mr, gu, pa). The other 13 (Odia, Assamese, Urdu, Konkani and others) get text translation plus whatever speech voices the phone's browser has. Speech quality for those depends on the device, not on Biruni.
-
-**Crash detection** is a heuristic, not a certified safety system. When the phone reports at least 3.5 g followed by stillness, Biruni asks "Are you OK?". With no answer in 30 seconds, it escalates through the normal SAFETY policy. That means 112 guidance, and the emergency contact is alerted only if the traveller opted in; otherwise Biruni asks first.
-
-**External MCP servers:** add any HTTP MCP server in Connections. stdio servers, which run a local command, are only allowed through the server-side `BIRUNI_MCP_SERVERS` env. Letting a web page start commands would be a remote-code-execution hole.
-
-**Maps:** MapLibre GL shows OpenStreetMap data through OpenFreeMap's free vector style, falling back to standard OSM raster tiles. Search, nearby places and directions use Nominatim, Overpass and OSRM. No keys are needed. These are free community services with fair-use limits, so self-host them or pay a provider before real traffic.
-
-## Live rails: what each adapter does
-
-| Rail | Source of the contract | Live behaviour | Verified with a real key? |
+| Rail | Contract source | Live behaviour | Run with a real key? |
 |---|---|---|---|
-| Gnani | official `gnani-vachana` SDK 0.7.9 (`/api/v1/tts/inference`, `/stt/v3`, `X-API-Key-ID`) | real TTS audio and STT | **No** |
-| Pine Labs | pinelabs.com Plural API docs | a charge becomes a **payment link the traveller must complete**; status by merchant reference; refunds | **No** |
-| Setu AA | docs.setu.co FIU APIs | consent, then data session, then 6 months of debits | **No**; token acquisition isn't covered in the docs I read, so set `SETU_ACCESS_TOKEN` |
-| Zerodha | kite.trade Kite Connect v3 docs | daily login flow, read-only holdings | **No** |
-| Delhivery | delhivery-express-api-doc (pickup request) | parcel/luggage booking: simulated end to end without a key; with a key it also files a real pickup request (auth format assumed). Maps use OpenStreetMap, not Delhivery | **No** |
-| Google Calendar | Google OAuth and Calendar v3 | OAuth read and write, or ICS read-only | **No** |
-| Reddit / YouTube / Splitwise | public API docs | search, search, sync | **No** (Reddit anonymous is blocked from cloud IPs) |
-| Gemini (stand-in LLM) | Google OpenAI-compatible endpoint | tool calling | **Yes** |
-| OpenStreetMap | Nominatim, OSRM | geocoding, reverse geocoding, nearby, directions | **Yes** (Overpass timed out from the sandbox; falls back to Nominatim) |
+| Gnani | official `gnani-vachana` SDK 0.7.9 | TTS and STT | No |
+| Pine Labs | Plural API docs | A charge becomes a **payment link you complete**; status; refunds | No |
+| Setu AA | docs.setu.co FIU APIs | Consent → data session → 6 months of debits (set `SETU_ACCESS_TOKEN`) | No |
+| Zerodha | Kite Connect v3 docs | Daily login, read-only holdings | No |
+| Delhivery | Delhivery API docs (pickup request) | Simulated; with a key, a real pickup request | No |
+| Exotel | developer.exotel.com | SMS, calls, audio stream | No |
+| WhatsApp | Meta Cloud API docs | Send + signed inbound webhook | No |
+| Google Calendar | OAuth + Calendar v3 | Read/write, or ICS read-only | No |
+| Reddit / YouTube / Splitwise | public API docs | Search, search, sync | No (Reddit blocks anonymous cloud IPs) |
+| Gemini | OpenAI-compatible endpoint | Tool calling | **Yes** |
+| OpenStreetMap | Nominatim, Photon, OSRM | Geocoding, nearby, directions | **Yes** (Overpass timed out from the sandbox; falls back to Nominatim) |
 
-Pine Labs note: a payment gateway can't silently debit a traveller. Autonomous recovery spending, which is the ₹2,000 L4 contract, needs a pre-authorised mandate arrangement with Pine Labs (the "Grantex authority" the design mentions). That isn't built. Live charges currently stop and hand the traveller a payment link.
+**Pine Labs:** a gateway can't silently debit you. Fully autonomous spending needs a pre-authorised mandate with Pine Labs, which isn't built, so live charges stop and hand you a payment link.
 
-## Implementation decisions the spec leaves open
+---
 
-These are my calls. Review them before freeze.
+## Design decisions
 
-- **Obligation inference thresholds:** keyword plus ≥5 stable months gives CONFIRMED; ≥5 stable months gives INFERRED; ≥3 months gives PROBABLE; a keyword or ≥₹5,000 gives UNCERTAIN. **All four classes are protected.** The spec says uncertain money is never free. Holdings are never counted.
-- **Undo restores authority:** a refunded spend gives the ₹ back to both the incident and daily authority.
-- **Traveller-approved spends** (after B or C) bypass the autonomous ₹2,000 and daily checks and don't consume them. An obligation override happens only when the traveller approved that specific obligation warning. Both are audited with the approval id.
-- **Readbacks:** one voice notice when the action executes (with the undo prompt), then the final readback after verification. This reconciles spec §14 with §21.
-- **Vendor checks:** minimum rating 3.5, at least 10 reviews, pickup within 2 km, quote no more than 1.5× the reference fare, and no fraud flags. Required for the `LOCAL_TRANSPORT` rung.
-- **Offline:** only `LOGGED_CASH` can execute, and voice falls back to device TTS.
+These are calls the spec left open; review them before freeze.
 
-## What is not built (once you add keys, these remain)
+- **Obligation classes:**
+  - keyword + ≥ 5 stable months → CONFIRMED
+  - ≥ 5 stable months → INFERRED
+  - ≥ 3 months → PROBABLE
+  - a keyword or ≥ ₹5,000 → UNCERTAIN
+
+  All four are protected, and holdings are never counted as free money.
+- **Undo** gives the ₹ back to both the incident and the daily authority.
+- **Traveller-approved spends** (after B or C) don't use up the autonomous ₹2,000. An obligation override needs approval of that specific warning. Both are audited.
+- **Readbacks:** one voice notice when an action runs (with the undo prompt), then a final readback after verification.
+- **Vendor checks:** rating ≥ 3.5 from ≥ 10 reviews, pickup within 2 km, quote ≤ 1.5× the reference fare, no fraud flags.
+- **Offline:** only logged cash can execute; voice falls back to the device.
+
+---
+
+## Honest gaps
 
 | Gap | Why | What closes it |
 |---|---|---|
-| Live rails never run against real accounts | no keys during development | run each with its key; expect field-name fixes |
-| TBO / Agoda / EaseMyTrip real booking | partner API kits need business KYC | wire endpoints from the partner kit into `services/integrations/partners` |
-| Exotel calls on a real phone | no Exotel account; stream message format unverified | test one call; adjust frame fields if Exotel differs |
-| Multi-server SOS / push notifications when the app is closed | alerts reach users of the same server, live or at next sign-in | Web Push / FCM |
-| Pine Labs can't debit you autonomously | gateways need a mandate or pre-auth | skipped by your decision; a mandate product later |
-| Delhivery waybill/shipment creation | request format isn't public | Delhivery One developer portal access |
-| WhatsApp cold outreach | WhatsApp's 24-hour rule | an approved message template |
-| Train/bus live status | no official public API; forwarded SMS works today | IRCTC/aggregator partner access |
-| On-phone local model | Hermes/Ollama run on a computer, not inside the phone app | a native on-device build (llama.cpp or MLC) |
-| APK voice without Gnani | Android WebView lacks the Web Speech API | Gnani keys, or native speech plugins |
-| Hosting on Vercel | stateless functions, no persistent disk | hosted DB + cron, or use an always-on host |
-| Cloud sync across servers / devices | one server holds the encrypted spaces | multi-device key sync |
-| Translation quality in low-resource languages | depends on the model | a native-speaker review, and a stronger model for those languages |
-| Crash detection | a heuristic | proper validation on real devices |
-| `graphify-out/` | describes the old Python code | rerun graphify |
+| Live rails never run against real accounts | no keys during development | run each with a key; expect field-name fixes |
+| TBO / Agoda / EaseMyTrip real booking | partner kits need business KYC | wire endpoints into `services/integrations/partners` |
+| Exotel calls on a real phone | no account; stream frame format unverified | test one call, adjust frame fields |
+| Gnani voice cloning | cloning API not verified | confirm with Gnani, then wire the slot in `services/style` |
+| Drop/crash thresholds | tuned on synthetic data | real-device drop tests |
+| Sensors with the app closed | web apps can't run sensors in the background | a native background service |
+| SOS push when the app is closed / across servers | alerts reach users of the same server, live or at next sign-in | Web Push / FCM |
+| Pine Labs autonomous debit | gateways need a mandate | a mandate product |
+| Delhivery waybill creation | request format not public | Delhivery One portal access |
+| WhatsApp cold outreach | 24-hour rule | an approved template |
+| Train/bus live status | no official public API (forwarded SMS works) | IRCTC/aggregator partner access |
+| APK voice without Gnani | WebView lacks Web Speech | Gnani keys or native speech plugins |
+| On-phone local model | Hermes/Ollama run on a computer | a native on-device build (llama.cpp or MLC) |
+| Vercel hosting | stateless, no disk | hosted DB + cron, or an always-on host |
+| Multi-device key sync across servers | one server holds the encrypted spaces | key sync |
+| Low-resource language quality | depends on the model | native-speaker review, stronger model |
+| Free-tier speed ceiling | provider rate limits | a second provider key |
+| No-reply behaviour (e.g. 600 s without a chat response) | not defined yet | your tweak |
+| `graphify-out/` | describes old Python code | rerun graphify |
+
+---
 
 ## Layout
 
 ```
-apps/web               Grok-style chat UI + PWA (vanilla JS, MapLibre vendored locally, SSE activity, sensors, mic/WAV recorder)
-apps/api/src           server.ts (sign-in, isolation, webhooks), http.ts, spaces.ts (per-user runtimes), routes/* (one file per feature)
-apps/mobile            Capacitor Android shell (launcher page, icons); APK built in GitHub Actions
-config/hermes          hardened Hermes Agent config (tools off, localhost only)
-apps/phone-offline     previous offline Python agent (see its README)
-services/orchestrator  planner, router (restartable AgentRuns), state-machine, authority (L4)
-services/agents/*      finance, recovery (+ undo), compliance, voice, travel, booking
-services/mcp           server pipeline, tools, middleware, zod schemas, stdio entry
-services/integrations  five rails (mock + live stub), simulator, scenarios
-services/models        model router, BYOK providers (Anthropic SDK adapter), encrypted settings
-services/social        shared trips + SOS (sealed per recipient)
-services/integrations/partners   booking partners + simulator
-services/feed          operator status feed
-services/telephony     Exotel SMS/calls, audio (VAD, WAV, resample)
-packages/crypto        Argon2id, envelope keys, X25519 sealed boxes, safety numbers
-packages/db/accounts.ts  accounts (wrapped DEKs, identity keys)
-apps/web/modules       sos, people, legal, battery, securelocal (each starts independently)
-services/conversation.ts  chat entry point + voice translation pipeline
-services/orchestrator/chat-agent.ts, chats.ts   LLM agent and per-function chats
-services/memory        graph memory (graphify format)
-services/devices       GPS + crash-detection check-ins
-services/mcp-client    connect external MCP servers
-services/integrations/{openstreetmap,google-calendar,reddit,youtube}   connectors
-services/agents/expenses  Splitwise-style splitting
-packages/*             domain types, db, policy, events, shared
-prisma/schema.prisma   production schema
-tests/*                node:test suites + scenarios/run-demo.ts
+apps/web                 chat UI + PWA (vanilla JS, MapLibre vendored, SSE, sensors, recorder)
+apps/web/modules         format, image, effects, permissions, sos, people, style, fall, falldetect,
+                         securelocal, battery, legal (each starts independently)
+apps/api/src             server.ts (sign-in, isolation, webhooks, static), http.ts, spaces.ts (per-user runtimes)
+apps/api/src/routes      trips, chat, device, travel, models, connections, autopilot, deals, feedback,
+                         social, falls, style (one file per feature)
+apps/mobile              Capacitor Android shell (launcher, permissions); APK built in Actions
+apps/phone-offline       earlier offline Python agent
+config/hermes            hardened Hermes Agent config (tools off, localhost only)
+services/orchestrator    planner, router, state machine, authority, chat agent, chats
+services/agents/*        finance, recovery (+ undo), compliance, voice, travel, booking, expenses
+services/mcp             MCP server pipeline, tools, schemas, stdio + HTTP entry
+services/mcp-client      connect external MCP servers
+services/models          model chain, BYOK providers, encrypted settings
+services/integrations    rails, partners (+ simulator), maps, calendar, reddit, youtube, health check
+services/autopilot       L4 autopilot
+services/feed            operator status feed
+services/telephony       Exotel SMS/calls, audio (VAD, WAV, resample)
+services/negotiator      deterministic haggling
+services/social          shared trips + SOS (sealed per recipient)
+services/falls           drop watch countdown
+services/devices         GPS + crash check-ins
+services/style           My style + voice sample
+services/memory          graph memory (graphify format)
+services/conversation.ts chat entry point + translation pipeline
+packages/crypto          Argon2id (workers), envelope keys, X25519 sealed boxes, safety numbers
+packages/db              store (AES-GCM + AAD), accounts
+packages/policy          safety words, consent and authority checks
+packages/{domain,events,shared}
+scripts                  check, agent-check(-hard), load-test, check-models
+tests/*                  node:test suites, e2e, scenarios/run-demo.ts
+docs/ARCHITECTURE.md     full system architecture
 ```
+
+---
+
+## Legal
+
+- **Biruni™ helps; you decide, and you are responsible** for your travel, bookings, payments and safety decisions. It is not an emergency service and does not replace 112.
+- The first-run notice and the full terms are in `apps/web/legal.html`.
+- `LICENSE` is proprietary, all rights reserved. It is a template; have a lawyer review it.
+- `NOTICE` lists third-party licences (MapLibre BSD-3, OpenStreetMap ODbL and others).
